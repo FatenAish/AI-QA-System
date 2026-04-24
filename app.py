@@ -1,7 +1,7 @@
 import streamlit as st
-import anthropic
 import json
 import re
+import urllib.request
 from datetime import datetime
 from io import BytesIO
 
@@ -245,6 +245,30 @@ def parse_file(uploaded_file) -> dict:
 
 
 # ── Claude QA evaluation ───────────────────────────────────────────────────
+def call_gemini(prompt: str) -> str:
+    """Call Google Gemini API (free tier) and return the text response."""
+    api_key = st.secrets["GEMINI_API_KEY"]
+    url     = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-1.5-flash:generateContent?key={api_key}"
+    )
+    body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500},
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data    = body,
+        headers = {"Content-Type": "application/json"},
+        method  = "POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
 def run_qa_evaluation(
     title: str,
     content: str,
@@ -257,11 +281,9 @@ def run_qa_evaluation(
     comments: list,
 ) -> dict:
 
-    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-
-    headings_txt  = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None detected"
-    links_txt     = "\n".join(f"  - {l}" for l in links[:10])                    or "  None detected"
-    comments_txt  = "\n".join(f"  [{c['author']}]: {c['text']}" for c in comments) or "  None"
+    headings_txt = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None detected"
+    links_txt    = "\n".join(f"  - {l}" for l in links[:10])                    or "  None detected"
+    comments_txt = "\n".join(f"  [{c['author']}]: {c['text']}" for c in comments) or "  None"
 
     prompt = f"""You are a senior content QA evaluator for {brand}, a leading real estate platform in the UAE and Middle East.
 
@@ -283,46 +305,37 @@ ARTICLE CONTENT:
 {content[:5000]}
 
 ---
-Score across EXACTLY these 6 dimensions. Return ONLY a valid JSON object — no markdown, no explanation outside the JSON.
+Score across EXACTLY these 6 dimensions. Return ONLY a valid JSON object — no markdown, no preamble, no explanation outside the JSON.
 
 {{
   "scores": {{
-    "Content Quality":    {{"score": <0-25>, "feedback": "<2-3 sentences>"}},
-    "SEO & Structure":    {{"score": <0-20>, "feedback": "<2-3 sentences>"}},
-    "Language & Grammar": {{"score": <0-20>, "feedback": "<2-3 sentences>"}},
-    "Brand Voice":        {{"score": <0-15>, "feedback": "<2-3 sentences>"}},
-    "Readability & Flow": {{"score": <0-10>, "feedback": "<2-3 sentences>"}},
-    "Originality":        {{"score": <0-10>, "feedback": "<2-3 sentences>"}}
+    "Content Quality":    {{"score": 0-25, "feedback": "2-3 sentences"}},
+    "SEO & Structure":    {{"score": 0-20, "feedback": "2-3 sentences"}},
+    "Language & Grammar": {{"score": 0-20, "feedback": "2-3 sentences"}},
+    "Brand Voice":        {{"score": 0-15, "feedback": "2-3 sentences"}},
+    "Readability & Flow": {{"score": 0-10, "feedback": "2-3 sentences"}},
+    "Originality":        {{"score": 0-10, "feedback": "2-3 sentences"}}
   }},
   "total": <sum of all scores>,
-  "overall_feedback": "<3-4 sentence executive summary>",
-  "key_strengths":         ["<short strength 1>", "<short strength 2>", "<short strength 3>"],
-  "areas_for_improvement": ["<short area 1>",     "<short area 2>",     "<short area 3>",     "<short area 4>"],
-  "recommendation": "<approve|revise|reject>"
+  "overall_feedback": "3-4 sentence executive summary",
+  "key_strengths":         ["strength 1", "strength 2", "strength 3"],
+  "areas_for_improvement": ["area 1", "area 2", "area 3", "area 4"],
+  "recommendation": "approve or revise or reject"
 }}
 
 SCORING RUBRICS:
 - Content Quality (25): accuracy, depth, relevance to UAE/Middle East real estate; buyer-benefit framing
-- SEO & Structure (20): heading use, keyword density, internal links, no raw "Sources" sections
-- Language & Grammar (20): grammar, natural expression; flag developer shorthand like G+1/G+2 for general audiences
-- Brand Voice (15): independent advisory tone matching {brand} — not developer marketing language
+- SEO & Structure (20): heading use, keyword density, internal links, no raw Sources sections
+- Language & Grammar (20): correct grammar; flag developer shorthand like G+1/G+2 for general audiences
+- Brand Voice (15): independent advisory tone matching {brand}, not developer marketing language
 - Readability (10): paragraph flow, sentence variety, scannability
-- Originality (10): unique editorial angle, not copy-pasted from developer brochures or other sites
+- Originality (10): unique editorial angle, not copy-pasted from developer brochures
 
-RECOMMENDATION THRESHOLD:
-- approve  → total >= 80
-- revise   → total 60-79
-- reject   → total < 60
+RECOMMENDATION THRESHOLD: approve >= 80, revise 60-79, reject < 60
 
-Also factor in the editor comments from the file — if they flag issues, reflect those in the relevant category scores and feedback.
-"""
+Factor editor comments into relevant category scores and feedback."""
 
-    msg  = client.messages.create(
-        model      = "claude-sonnet-4-20250514",
-        max_tokens = 1500,
-        messages   = [{"role": "user", "content": prompt}],
-    )
-    raw  = msg.content[0].text.strip()
+    raw   = call_gemini(prompt)
     clean = re.sub(r"```json|```", "", raw).strip()
     return json.loads(clean)
 
