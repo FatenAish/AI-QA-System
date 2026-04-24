@@ -235,13 +235,15 @@ def extract_txt(file_bytes: bytes) -> dict:
 
 def parse_file(uploaded_file) -> dict:
     name = uploaded_file.name.lower()
-    raw  = uploaded_file.read()
+    # use getvalue() — more reliable than read() in Streamlit
+    raw  = uploaded_file.getvalue()
     if name.endswith(".docx"):
-        return extract_docx(raw)
+        result = extract_docx(raw)
     elif name.endswith(".pdf"):
-        return extract_pdf(raw)
+        result = extract_pdf(raw)
     else:
-        return extract_txt(raw)
+        result = extract_txt(raw)
+    return result
 
 
 # ── Claude QA evaluation ───────────────────────────────────────────────────
@@ -509,8 +511,10 @@ def page_submit(brand: str):
     with st.spinner("Reading file and extracting structure…"):
         parsed = parse_file(uploaded)
 
-    if not parsed.get("text") or len(parsed["text"]) < 100:
-        st.error("The file appears to be empty or too short. Please check the file and re-upload.")
+    if not parsed.get("text") or len(parsed["text"]) < 20:
+        st.error(f"Could not read text from the file. File size: {uploaded.size} bytes. Please make sure the file is not password protected and try again.")
+        if parsed.get("error"):
+            st.error(f"Detail: {parsed['error']}")
         return
 
     # ── show extracted metadata ───────────────────────────────────────────
