@@ -255,9 +255,28 @@ def parse_file(uploaded_file) -> dict:
 def call_gemini(prompt: str) -> str:
     """Call Google Gemini API using the official SDK."""
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model    = genai.GenerativeModel("gemini-1.5-flash")
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    # gemini-2.0-flash-lite is the correct free tier model as of 2026
+    for model_name in [
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+    ]:
+        try:
+            model    = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature    = 0.3,
+                    max_output_tokens = 1500,
+                )
+            )
+            return response.text.strip()
+        except Exception as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                continue   # try next model
+            raise e        # surface real errors
+    raise Exception("No Gemini model responded. Please check your API key in Streamlit Secrets.")
 
 
 def run_qa_evaluation(
