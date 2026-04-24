@@ -1,7 +1,6 @@
 import streamlit as st
 import json
 import re
-import urllib.request
 from datetime import datetime
 from io import BytesIO
 
@@ -18,6 +17,12 @@ try:
     PDF_OK = True
 except ImportError:
     PDF_OK = False
+
+try:
+    import google.generativeai as genai
+    GENAI_OK = True
+except ImportError:
+    GENAI_OK = False
 
 try:
     import gspread
@@ -248,27 +253,11 @@ def parse_file(uploaded_file) -> dict:
 
 # ── Claude QA evaluation ───────────────────────────────────────────────────
 def call_gemini(prompt: str) -> str:
-    """Call Google Gemini API (free tier) and return the text response."""
-    api_key = st.secrets["GEMINI_API_KEY"]
-    url     = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-1.5-flash:generateContent?key={api_key}"
-    )
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500},
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        url,
-        data    = body,
-        headers = {"Content-Type": "application/json"},
-        method  = "POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    """Call Google Gemini API using the official SDK."""
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    model    = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
 
 def run_qa_evaluation(
