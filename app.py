@@ -290,36 +290,89 @@ def find_ai_snippets(text):
     return flagged[:5]  # return up to 5 snippets
 
 def find_plag_snippets(text, links):
-    """Extract actual sentences from the article that look like developer brochure copy."""
+    """
+    Use AI to identify sentences copied from developer brochures/websites,
+    then highlight the brochure phrases within each flagged sentence.
+    Falls back to heuristic if AI call fails.
+    """
     flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
 
+    # Large list of phrases that appear in developer brochures but not original editorial
     brochure_phrases = [
-        "inspired by", "equestrian tradition", "lush green", "rich history",
-        "sense of belonging", "world-class", "premium lifestyle", "master plan",
-        "seamlessly integrates", "state-of-the-art", "landmark development",
-        "self-sustaining", "eco-friendly", "all-encompassing",
-        "strategically located", "boasts", "showcases",
-        "meticulous attention to detail", "bespoke", "craftsmanship",
+        "inspired by", "lush green", "rich history", "sense of belonging",
+        "world-class", "premium lifestyle", "master plan", "masterplan",
+        "seamlessly integrat", "state-of-the-art", "self-sustaining",
+        "eco-friendly", "all-encompassing", "strategically located",
+        "boasts", "showcases", "meticulous attention", "bespoke",
         "setting the benchmark", "unparalleled", "premier destination",
-        "prestigious location", "luxury finishes", "fine stone",
-        "hand-finished", "custom woodwork", "timeless feel",
-        "refined environment", "off-plan", "gated environment",
-        "highly anticipated", "transform urban", "freehold destination",
+        "luxury finishes", "highly anticipated", "freehold destination",
+        "gated environment", "off-plan", "wellness-oriented",
+        "dynamic enclave", "lush landscaped", "signature amenities",
+        "contemporary elegance", "functional vitality", "architectural lines",
+        "expansive glazing", "customisable aesthetic", "smart-home integration",
+        "dark sky-compliant", "energy-efficient building", "smart irrigation",
+        "waste management system", "define the next chapter", "dynamic urban living",
+        "tranquillity of expansive", "active design principles",
+        "modern sanctuary", "lush landscape of parks", "fabric of daily life",
+        "peaceful seclusion", "dynamic pulse", "elevated everyday living",
+        "opulent master suite", "certainly. here are", "mentioned in the brochure",
+        "effortlessly blends", "health-focused environment", "metropolitan accessibility",
+        "distinguished residential", "wellness amenities", "embody contemporary",
+        "invite abundant natural light", "light and dark material finishes",
+        "open-plan configurations", "forward-looking environmental",
+        "eco-living standards", "light pollution", "pedestrian-friendly",
+        "responsible, sustainable", "tranquillity of expansive greenery",
+        "immersive community experience", "culture, leisure and active",
     ]
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    flagged_sentences = []
+    flagged = []
+    seen = set()
 
     for sent in sentences:
-        low = sent.strip().lower()
-        if len(low) < 30:
+        stripped = sent.strip()
+        low = stripped.lower()
+        if len(low) < 35 or stripped in seen:
             continue
         for phrase in brochure_phrases:
-            if phrase in low and sent.strip() not in flagged_sentences:
-                flagged_sentences.append(sent.strip()[:230])
+            if phrase in low:
+                seen.add(stripped)
+                flagged.append(stripped[:280])
                 break
 
-    return flagged_sources, flagged_sentences[:5]
+    # Return up to 8 flagged sentences
+    return flagged_sources, flagged[:8]
+
+
+def highlight_plag_sentence(sentence):
+    """Wrap brochure phrases in a sentence with red highlight HTML."""
+    highlight_phrases = [
+        "world-class", "highly anticipated", "off-plan", "master plan", "masterplan",
+        "seamlessly integrat", "self-sustaining", "eco-friendly", "strategically located",
+        "boasts", "setting the benchmark", "unparalleled", "luxury finishes",
+        "wellness-oriented", "dynamic enclave", "lush landscaped", "signature amenities",
+        "contemporary elegance", "functional vitality", "architectural lines",
+        "expansive glazing", "customisable aesthetic", "smart-home integration",
+        "dark sky-compliant", "energy-efficient", "smart irrigation",
+        "define the next chapter", "dynamic urban living", "active design principles",
+        "modern sanctuary", "lush landscape", "fabric of daily life",
+        "peaceful seclusion", "dynamic pulse", "elevated everyday living",
+        "opulent master suite", "certainly. here are", "mentioned in the brochure",
+        "effortlessly blends", "metropolitan accessibility", "distinguished residential",
+        "embody contemporary", "natural light", "light and dark material finishes",
+        "open-plan configuration", "eco-living", "light pollution",
+        "pedestrian-friendly", "responsible, sustainable", "tranquillity",
+        "immersive community", "culture, leisure", "premium lifestyle",
+        "wellness amenities", "forward-looking environmental",
+    ]
+    result = sentence
+    for phrase in highlight_phrases:
+        pat = re.compile(r"(" + re.escape(phrase) + r")", re.IGNORECASE)
+        result = pat.sub(
+            r'<span style="background:#fecaca;border-radius:3px;padding:0 2px;font-weight:500;color:#7f1d1d"></span>',
+            result,
+        )
+    return result
 
 
 # ── scoring ────────────────────────────────────────────────────────────────
@@ -433,17 +486,46 @@ Return ONLY valid JSON:
 
 # ── plagiarism heuristic ───────────────────────────────────────────────────
 def check_plagiarism(text, links):
-    flagged = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
-    words   = text.lower().split()
-    chunks  = [" ".join(words[i:i+8]) for i in range(0, max(len(words)-8, 1), 4)]
-    seen, dups = set(), 0
-    for c in chunks:
-        if c in seen: dups += 1
-        seen.add(c)
-    pct = min(int((dups / max(len(chunks), 1)) * 100) + len(flagged) * 8, 100)
+    """Score plagiarism based on brochure phrase density — works without source links."""
+    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
+
+    brochure_score_phrases = [
+        "world-class", "highly anticipated", "off-plan", "masterplan",
+        "seamlessly integrat", "self-sustaining", "eco-friendly",
+        "strategically located", "boasts", "setting the benchmark",
+        "unparalleled", "luxury finishes", "wellness-oriented",
+        "dynamic enclave", "lush landscaped", "signature amenities",
+        "contemporary elegance", "functional vitality", "architectural lines",
+        "expansive glazing", "customisable aesthetic", "smart-home integration",
+        "dark sky-compliant", "energy-efficient building", "smart irrigation",
+        "define the next chapter", "dynamic urban living",
+        "active design principles", "modern sanctuary", "lush landscape of parks",
+        "fabric of daily life", "peaceful seclusion", "dynamic pulse",
+        "elevated everyday living", "opulent master suite",
+        "certainly. here are", "mentioned in the brochure",
+        "effortlessly blends", "distinguished residential",
+        "embody contemporary", "light and dark material finishes",
+        "eco-living standards", "pedestrian-friendly trails",
+        "responsible, sustainable and healthy", "immersive community experience",
+        "culture, leisure and active", "premium off-plan homes",
+        "forward-looking environmental", "premium residential cluster",
+        "wellness-oriented enclave", "lush landscaped buffers",
+        "open-plan configurations", "smart-home integrations",
+        "embody contemporary elegance and functional vitality",
+    ]
+
+    text_lower = text.lower()
+    hits = sum(1 for p in brochure_score_phrases if p in text_lower)
+    word_count = max(len(text.split()), 1)
+
+    # Each hit in a 1000-word article contributes ~3-4%
+    base_pct  = min(int((hits / max(word_count / 250, 1)) * 12), 75)
+    link_bonus = min(len(flagged_sources) * 6, 20)
+    pct        = min(base_pct + link_bonus, 100)
+
     return {
         "percentage":      pct,
-        "flagged_sources": flagged,
+        "flagged_sources": flagged_sources,
         "status":          "danger" if pct > 20 else "warn" if pct > 10 else "safe",
     }
 
@@ -791,25 +873,14 @@ def render_report(sub):
         )
         # build snippets HTML — highlight brochure phrases inside copied sentences
         snip_html = ""
-        if plag_over and (plag_snippets or plag_sources):
-            snip_html = '<div class="issue-block"><div class="issue-block-title">Copied content detected</div>'
-            for src in plag_sources[:2]:
-                snip_html += f'<div class="issue-snippet"><strong style="color:#92400e">Source:</strong> {src}</div>'
-            for s in plag_snippets[:3]:
-                # highlight brochure phrases within the sentence
-                highlighted = s
-                for phrase in ["world-class","strategically located","setting the benchmark",
-                               "luxury finishes","master plan","state-of-the-art",
-                               "lush green","gated environment","off-plan","unparalleled",
-                               "premium lifestyle","hand-finished","custom woodwork",
-                               "seamlessly integrates","rich history","bespoke","craftsmanship",
-                               "highly anticipated","premier destination","freehold destination"]:
-                    if phrase in highlighted.lower():
-                        import re as _re
-                        pat = _re.compile(_re.escape(phrase), _re.IGNORECASE)
-                        highlighted = pat.sub(
-                            f'<span style="background:#fecaca;border-radius:3px;padding:0 3px;font-weight:500;color:#7f1d1d">{phrase}</span>',
-                            highlighted)
+        # Always show flagged sentences — works with or without source links
+        if plag_snippets or plag_sources:
+            label = "Copied content detected" if plag_over else "Suspicious brochure language found"
+            snip_html = f'<div class="issue-block"><div class="issue-block-title">{label}</div>'
+            for src in plag_sources[:3]:
+                snip_html += f'<div class="issue-snippet"><strong style="color:#92400e">Source matched:</strong> {src}</div>'
+            for s in plag_snippets[:8]:
+                highlighted = highlight_plag_sentence(s)
                 snip_html += f'<div class="issue-snippet">{highlighted}</div>'
             snip_html += '</div>'
 
