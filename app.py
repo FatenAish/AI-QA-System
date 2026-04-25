@@ -290,17 +290,36 @@ def find_ai_snippets(text):
     return flagged[:5]  # return up to 5 snippets
 
 def find_plag_snippets(text, links):
-    """Return suspicious repeated phrases and flagged source links."""
+    """Extract actual sentences from the article that look like developer brochure copy."""
     flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
-    words  = text.lower().split()
-    chunks = [" ".join(words[i:i+10]) for i in range(0, max(len(words)-10, 1), 5)]
-    seen, repeated = set(), []
-    for c in chunks:
-        if c in seen and c not in repeated:
-            repeated.append(c)
-        seen.add(c)
-    snippets = [r[:150] + "..." for r in repeated[:3]]
-    return flagged_sources, snippets
+
+    brochure_phrases = [
+        "inspired by", "equestrian tradition", "lush green", "rich history",
+        "sense of belonging", "world-class", "premium lifestyle", "master plan",
+        "seamlessly integrates", "state-of-the-art", "landmark development",
+        "self-sustaining", "eco-friendly", "all-encompassing",
+        "strategically located", "boasts", "showcases",
+        "meticulous attention to detail", "bespoke", "craftsmanship",
+        "setting the benchmark", "unparalleled", "premier destination",
+        "prestigious location", "luxury finishes", "fine stone",
+        "hand-finished", "custom woodwork", "timeless feel",
+        "refined environment", "off-plan", "gated environment",
+        "highly anticipated", "transform urban", "freehold destination",
+    ]
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    flagged_sentences = []
+
+    for sent in sentences:
+        low = sent.strip().lower()
+        if len(low) < 30:
+            continue
+        for phrase in brochure_phrases:
+            if phrase in low and sent.strip() not in flagged_sentences:
+                flagged_sentences.append(sent.strip()[:230])
+                break
+
+    return flagged_sources, flagged_sentences[:5]
 
 
 # ── scoring ────────────────────────────────────────────────────────────────
@@ -781,14 +800,28 @@ def render_report(sub):
             f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">'
             f'{plag_pct}% — under 20% threshold — no deduction</span>'
         )
-        # build snippets HTML
+        # build snippets HTML — highlight brochure phrases inside copied sentences
         snip_html = ""
         if plag_over and (plag_snippets or plag_sources):
-            snip_html = '<div class="issue-block"><div class="issue-block-title">Flagged content</div>'
+            snip_html = '<div class="issue-block"><div class="issue-block-title">Copied content detected</div>'
             for src in plag_sources[:2]:
-                snip_html += f'<div class="issue-snippet">Source matched: {src}</div>'
-            for s in plag_snippets[:2]:
-                snip_html += f'<div class="issue-snippet">{s}</div>'
+                snip_html += f'<div class="issue-snippet"><strong style="color:#92400e">Source:</strong> {src}</div>'
+            for s in plag_snippets[:3]:
+                # highlight brochure phrases within the sentence
+                highlighted = s
+                for phrase in ["world-class","strategically located","setting the benchmark",
+                               "luxury finishes","master plan","state-of-the-art",
+                               "lush green","gated environment","off-plan","unparalleled",
+                               "premium lifestyle","hand-finished","custom woodwork",
+                               "seamlessly integrates","rich history","bespoke","craftsmanship",
+                               "highly anticipated","premier destination","freehold destination"]:
+                    if phrase in highlighted.lower():
+                        import re as _re
+                        pat = _re.compile(_re.escape(phrase), _re.IGNORECASE)
+                        highlighted = pat.sub(
+                            f'<span style="background:#fecaca;border-radius:3px;padding:0 3px;font-weight:500;color:#7f1d1d">{phrase}</span>',
+                            highlighted)
+                snip_html += f'<div class="issue-snippet">{highlighted}</div>'
             snip_html += '</div>'
 
         st.markdown(
