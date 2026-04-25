@@ -29,7 +29,6 @@ try:
 except ImportError:
     SHEETS_OK = False
 
-# ── config ─────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Content QA System",
     page_icon="Q",
@@ -58,6 +57,20 @@ GRADE_MAP = [
     (0,  "F  Reject",         "red"),
 ]
 
+# AI phrases used for detection highlighting
+AI_PHRASES = [
+    "in conclusion", "it is worth noting", "it is important to note",
+    "delve into", "in the realm of", "furthermore", "moreover",
+    "needless to say", "leverage", "utilize", "seamlessly",
+    "it goes without saying", "in today's", "one such", "robust",
+    "cutting-edge", "state-of-the-art", "at the end of the day",
+]
+
+KNOWN_DOMAINS = [
+    "emaar.com", "nakheel.com", "damac.com", "aldar.com", "meraas.com",
+    "sobha.com", "omniyat.com", "ellington.ae", "azizi.ae", "reportage.ae",
+]
+
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
     st.markdown("""
@@ -74,9 +87,9 @@ def inject_css():
         background:var(--qa-light); border:1px solid var(--qa);
         border-radius:10px; padding:16px 20px; margin-bottom:1rem;
     }
-    .score-num   { font-size:52px; font-weight:500; color:var(--qa); line-height:1; }
-    .score-den   { font-size:16px; font-weight:400; color:#888; }
-    .score-grade { font-size:13px; font-weight:500; margin-top:4px; color:var(--qa); }
+    .score-num    { font-size:52px; font-weight:500; color:var(--qa); line-height:1; }
+    .score-den    { font-size:16px; font-weight:400; color:#888; }
+    .score-grade  { font-size:13px; font-weight:500; margin-top:4px; color:var(--qa); }
     .score-verdict { font-size:12px; color:#444; line-height:1.65; margin-top:8px; }
 
     .breakdown-box {
@@ -95,21 +108,34 @@ def inject_css():
 
     .detect-card {
         border:0.5px solid #e0e0e0; border-radius:10px;
-        padding:14px 16px; background:#fff;
+        padding:14px 16px; background:#fff; height:100%;
     }
-    .detect-title { font-size:12px; font-weight:600; color:#1a1d2e; margin-bottom:2px; }
-    .detect-pct   { font-size:32px; font-weight:500; line-height:1; margin:6px 0 4px; }
-    .detect-bar   { height:6px; background:#eee; border-radius:3px; margin-bottom:8px; }
-    .detect-bar-f { height:100%; border-radius:3px; }
-    .detect-threshold {
-        font-size:11px; font-weight:500; padding:4px 10px;
-        border-radius:6px; display:inline-block; margin-bottom:6px;
+    .detect-title   { font-size:12px; font-weight:600; color:#1a1d2e; margin-bottom:6px; }
+    .detect-pct     { font-size:32px; font-weight:500; line-height:1; margin-bottom:4px; }
+    .detect-bar     { height:6px; background:#eee; border-radius:3px; margin-bottom:8px; }
+    .detect-bar-f   { height:100%; border-radius:3px; }
+    .detect-thresh  { font-size:11px; font-weight:500; padding:4px 10px;
+                      border-radius:6px; display:inline-block; margin-bottom:8px; }
+    .detect-note    { font-size:11px; color:#666; line-height:1.6; }
+    .detect-split   { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+    .detect-seg     { text-align:center; background:#f5f6fa; border-radius:6px; padding:6px; }
+    .detect-seg-n   { font-size:14px; font-weight:500; }
+    .detect-seg-l   { font-size:10px; color:#888; margin-top:2px; }
+
+    .issue-block {
+        background:#fffbf0; border:0.5px solid #f0d080;
+        border-radius:6px; padding:8px 10px; margin-top:8px; font-size:11px;
     }
-    .detect-note  { font-size:11px; color:#666; line-height:1.55; }
-    .detect-split { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
-    .detect-seg   { text-align:center; background:#f5f6fa; border-radius:6px; padding:6px; }
-    .detect-seg-n { font-size:14px; font-weight:500; }
-    .detect-seg-l { font-size:10px; color:#888; margin-top:2px; }
+    .issue-block-title { font-size:10px; font-weight:600; color:#92400e;
+                         text-transform:uppercase; letter-spacing:0.05em; margin-bottom:5px; }
+    .issue-snippet {
+        background:#fff; border-left:3px solid #d97706;
+        padding:5px 8px; margin-bottom:4px; border-radius:0 4px 4px 0;
+        font-size:11px; color:#444; line-height:1.5; font-style:italic;
+    }
+    .issue-snippet:last-child { margin-bottom:0; }
+    .ai-highlight { background:#fef3c7; border-radius:3px; padding:0 2px;
+                    font-weight:500; color:#92400e; }
 
     .cmt-card {
         background:#fff8f0; border-left:3px solid #2D4A8A;
@@ -118,11 +144,8 @@ def inject_css():
     }
     .cmt-author { font-weight:600; color:#2D4A8A; }
     .cmt-deduct { font-size:10px; color:#991b1b; font-weight:500; margin-top:3px; }
-
-    .cat-comment-tag {
-        font-size:10px; font-weight:500; padding:1px 8px; border-radius:20px;
-        background:#EEF2FB; color:#2D4A8A; margin-left:6px;
-    }
+    .cat-ref    { font-size:10px; font-weight:500; padding:1px 7px; border-radius:20px;
+                  background:#EEF2FB; color:#2D4A8A; margin-left:6px; }
 
     .suggest-item {
         display:flex; gap:10px; align-items:flex-start;
@@ -148,6 +171,18 @@ def inject_css():
     .bdg     { font-size:10px; font-weight:500; padding:2px 9px; border-radius:20px; }
     .bdg-bay { background:#e8f5e9; color:#1b5e20; }
     .bdg-dub { background:#fdecea; color:#b71c1c; }
+
+    .plat-btn {
+        display:inline-block; padding:7px 20px; border-radius:8px;
+        font-size:13px; font-weight:500; cursor:pointer;
+        border:2px solid transparent; margin-right:8px;
+        transition:all 0.15s;
+    }
+    .no-comments-notice {
+        background:#f5f6fa; border:0.5px solid #e0e0e0;
+        border-radius:6px; padding:10px 14px; font-size:12px;
+        color:#666; margin-bottom:8px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -239,13 +274,41 @@ def parse_file(f):
     else:                        return extract_txt(raw)
 
 
-# ── scoring logic ──────────────────────────────────────────────────────────
+# ── content issue extraction ───────────────────────────────────────────────
+def find_ai_snippets(text):
+    """Return sentences that contain AI phrases."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    flagged = []
+    for sent in sentences:
+        low = sent.lower()
+        for phrase in AI_PHRASES:
+            if phrase in low:
+                snippet = sent.strip()
+                if len(snippet) > 20 and snippet not in flagged:
+                    flagged.append(snippet[:200])
+                break
+    return flagged[:5]  # return up to 5 snippets
+
+def find_plag_snippets(text, links):
+    """Return suspicious repeated phrases and flagged source links."""
+    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
+    words  = text.lower().split()
+    chunks = [" ".join(words[i:i+10]) for i in range(0, max(len(words)-10, 1), 5)]
+    seen, repeated = set(), []
+    for c in chunks:
+        if c in seen and c not in repeated:
+            repeated.append(c)
+        seen.add(c)
+    snippets = [r[:150] + "..." for r in repeated[:3]]
+    return flagged_sources, snippets
+
+
+# ── scoring ────────────────────────────────────────────────────────────────
 def apply_deductions(base_score, comments, plag_pct, ai_pct):
     comment_deduction = len(comments)
     plag_deduction    = 5 if plag_pct > 20 else 0
     ai_deduction      = 5 if ai_pct   > 20 else 0
-    total_deduction   = comment_deduction + plag_deduction + ai_deduction
-    final             = max(0, base_score - total_deduction)
+    final             = max(0, base_score - comment_deduction - plag_deduction - ai_deduction)
     return final, {
         "base_score":        base_score,
         "comment_count":     len(comments),
@@ -254,7 +317,6 @@ def apply_deductions(base_score, comments, plag_pct, ai_pct):
         "plag_deduction":    plag_deduction,
         "ai_pct":            ai_pct,
         "ai_deduction":      ai_deduction,
-        "total_deduction":   total_deduction,
         "final_score":       final,
     }
 
@@ -270,23 +332,36 @@ def get_grade(score):
     return GRADE_MAP[-1][1], GRADE_MAP[-1][2]
 
 
-# ── QA evaluation — category scores driven by comments ─────────────────────
+# ── QA evaluation ── only scores from comments, max score if no comments ───
 def run_qa(title, content, writer, ctype, lang, platform, headings, links, comments):
     h_txt = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None"
     l_txt = "\n".join(f"  - {l}" for l in links[:8])                      or "  None"
 
-    # Build numbered comment list for the AI to reference
-    if comments:
-        c_txt = "\n".join(f"  Comment {i+1} [{c['author']}]: {c['text']}"
-                          for i, c in enumerate(comments))
-    else:
-        c_txt = "  No editor comments found in the file."
+    if not comments:
+        # No comments — give max scores across all categories, no AI opinion
+        scores = {cat: {"score": mx, "feedback": "No editor comments found. Full marks awarded.", "comment_refs": []}
+                  for cat, mx in CAT_MAX.items()}
+        total = sum(CAT_MAX.values())
+        return {
+            "scores":               scores,
+            "total":                total,
+            "overall_feedback":     "No editor comments were found in the uploaded file. All categories have been awarded full marks. Scores will be adjusted if editor comments are added.",
+            "key_strengths":        [],
+            "areas_for_improvement":[],
+            "suggestions":          [],
+        }
+
+    c_txt = "\n".join(
+        f"  Comment {i+1} [{c['author']}]: {c['text']}"
+        for i, c in enumerate(comments)
+    )
 
     prompt = f"""You are a senior content QA evaluator for {platform}, a leading UAE real estate platform.
-Evaluate this {ctype.lower()} written in {lang}.
 
 TITLE: {title}
 WRITER: {writer}
+CONTENT TYPE: {ctype}
+LANGUAGE: {lang}
 
 HEADINGS IN FILE:
 {h_txt}
@@ -297,46 +372,37 @@ LINKS IN FILE:
 EDITOR COMMENTS FROM FILE:
 {c_txt}
 
-ARTICLE CONTENT:
-{content[:4000]}
+ARTICLE CONTENT (for context only — do NOT score independently):
+{content[:3000]}
 
-IMPORTANT SCORING RULES:
-1. Category scores MUST be based primarily on the editor comments above.
-2. Each comment identifies a specific quality issue — map each comment to the most relevant category and reduce that category's score accordingly.
-3. If there are no comments for a category, score it based on the article content.
-4. Every comment must appear in at least one category's feedback.
-5. The "comments" field in each score must list which comment numbers affected that category (e.g. "Comment 1 and Comment 3 flagged issues here").
+CRITICAL RULES:
+1. Score ONLY based on the editor comments listed above. Do NOT independently evaluate the article content.
+2. Map each comment to the most relevant category and reduce that category's score.
+3. If no comments relate to a category, award that category its MAXIMUM score.
+4. Every comment MUST be reflected in at least one category's score and feedback.
+5. "comment_refs" must list the comment numbers (1, 2, 3...) that affected each category.
+6. Suggestions must directly address the comments — do not invent new issues.
 
-Return ONLY valid JSON — no markdown, no text outside JSON:
+Return ONLY valid JSON:
 {{
   "scores": {{
-    "Content Quality":    {{"score": <0-25>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}},
-    "SEO & Structure":    {{"score": <0-20>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}},
-    "Language & Grammar": {{"score": <0-20>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}},
-    "Brand Voice":        {{"score": <0-15>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}},
-    "Readability & Flow": {{"score": <0-10>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}},
-    "Originality":        {{"score": <0-10>, "feedback": "<what comments flagged + content assessment>", "comment_refs": [<comment numbers that affected this>]}}
+    "Content Quality":    {{"score": <0-25>, "feedback": "<what comments flagged>", "comment_refs": []}},
+    "SEO & Structure":    {{"score": <0-20>, "feedback": "<what comments flagged>", "comment_refs": []}},
+    "Language & Grammar": {{"score": <0-20>, "feedback": "<what comments flagged>", "comment_refs": []}},
+    "Brand Voice":        {{"score": <0-15>, "feedback": "<what comments flagged>", "comment_refs": []}},
+    "Readability & Flow": {{"score": <0-10>, "feedback": "<what comments flagged>", "comment_refs": []}},
+    "Originality":        {{"score": <0-10>, "feedback": "<what comments flagged>", "comment_refs": []}}
   }},
-  "total": <sum of all 6 scores>,
-  "overall_feedback": "<3 sentence summary referencing the comments>",
-  "key_strengths": ["<s1>", "<s2>", "<s3>"],
-  "areas_for_improvement": ["<a1>", "<a2>", "<a3>", "<a4>"],
+  "total": <sum>,
+  "overall_feedback": "<summary referencing the specific comments>",
+  "key_strengths": [],
+  "areas_for_improvement": ["<from comment 1>", "<from comment 2>"],
   "suggestions": [
-    {{"number": 1, "action": "<specific fix based on a comment>", "category": "<category name>"}},
-    {{"number": 2, "action": "<specific fix based on a comment>", "category": "<category name>"}},
-    {{"number": 3, "action": "<specific fix>", "category": "<category name>"}},
-    {{"number": 4, "action": "<specific fix>", "category": "<category name>"}},
-    {{"number": 5, "action": "<specific fix>", "category": "<category name>"}}
+    {{"number": 1, "action": "<specific fix from comment 1>", "category": "<category>"}},
+    {{"number": 2, "action": "<specific fix from comment 2>", "category": "<category>"}},
+    {{"number": 3, "action": "<specific fix from comment 3>", "category": "<category>"}}
   ]
-}}
-
-SCORING RUBRICS (start at max, reduce based on comments and content):
-- Content Quality (25): buyer framing, depth, UAE relevance
-- SEO & Structure (20): headings, keywords, internal {platform} links
-- Language & Grammar (20): grammar, plain language (flag G+1 shorthand)
-- Brand Voice (15): {platform} advisory tone, not developer marketing copy
-- Readability (10): flow, scannability, sentence variety
-- Originality (10): unique angle, not copy-pasted from brochures"""
+}}"""
 
     raw   = call_ai(prompt)
     clean = re.sub(r"```json|```", "", raw).strip()
@@ -348,9 +414,7 @@ SCORING RUBRICS (start at max, reduce based on comments and content):
 
 # ── plagiarism heuristic ───────────────────────────────────────────────────
 def check_plagiarism(text, links):
-    known   = ["emaar.com","nakheel.com","damac.com","aldar.com","meraas.com",
-               "sobha.com","omniyat.com","ellington.ae","azizi.ae","reportage.ae"]
-    flagged = [l for l in links if any(d in l for d in known)]
+    flagged = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
     words   = text.lower().split()
     chunks  = [" ".join(words[i:i+8]) for i in range(0, max(len(words)-8, 1), 4)]
     seen, dups = set(), 0
@@ -364,17 +428,8 @@ def check_plagiarism(text, links):
         "status":          "danger" if pct > 20 else "warn" if pct > 10 else "safe",
     }
 
-
-# ── AI detection heuristic ─────────────────────────────────────────────────
 def check_ai(text):
-    phrases = [
-        "in conclusion","it is worth noting","it is important to note",
-        "delve into","in the realm of","furthermore","moreover",
-        "needless to say","leverage","utilize","seamlessly",
-        "it goes without saying","in today's","one such","robust",
-        "cutting-edge","state-of-the-art","at the end of the day",
-    ]
-    hits = sum(1 for p in phrases if p in text.lower())
+    hits = sum(1 for p in AI_PHRASES if p in text.lower())
     pct  = min(hits * 5, 65)
     return {
         "ai_pct":    pct,
@@ -446,6 +501,49 @@ def sidebar():
         return page
 
 
+# ── platform selector ──────────────────────────────────────────────────────
+def platform_selector():
+    """Coloured Bayut/Dubizzle buttons using session state."""
+    if "platform" not in st.session_state:
+        st.session_state.platform = "Bayut"
+
+    st.markdown("**Platform**")
+    col_b, col_d, col_rest = st.columns([1, 1, 4])
+
+    bay_style = (
+        "background:#2e7d32;color:#fff;border:2px solid #2e7d32;"
+        if st.session_state.platform == "Bayut"
+        else "background:#fff;color:#2e7d32;border:2px solid #2e7d32;"
+    )
+    dub_style = (
+        "background:#c62828;color:#fff;border:2px solid #c62828;"
+        if st.session_state.platform == "Dubizzle"
+        else "background:#fff;color:#c62828;border:2px solid #c62828;"
+    )
+
+    st.markdown(
+        f"""
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div onclick="" style="padding:7px 20px;border-radius:8px;font-size:13px;
+               font-weight:500;cursor:pointer;{bay_style}">Bayut</div>
+          <div onclick="" style="padding:7px 20px;border-radius:8px;font-size:13px;
+               font-weight:500;cursor:pointer;{dub_style}">Dubizzle</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # actual functional buttons hidden behind radio
+    choice = st.radio(
+        "Platform select",
+        ["Bayut", "Dubizzle"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="platform",
+    )
+    return choice
+
+
 # ── submit page ────────────────────────────────────────────────────────────
 def page_submit():
     inject_css()
@@ -468,27 +566,34 @@ def page_submit():
             PLATFORMS,
             horizontal=True,
             label_visibility="collapsed",
-            format_func=lambda x: (
-                f"Bayut  (green)" if x == "Bayut" else "Dubizzle  (red)"
-            ),
+        )
+
+        # Colour the selected platform label via markdown
+        bay_sel = platform == "Bayut"
+        dub_sel = platform == "Dubizzle"
+        st.markdown(
+            f'<div style="margin-top:-8px;margin-bottom:8px;display:flex;gap:8px">'
+            f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
+            f'background:{"#2e7d32" if bay_sel else "#e8f5e9"};'
+            f'color:{"#fff" if bay_sel else "#2e7d32"}">Bayut</span>'
+            f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
+            f'background:{"#c62828" if dub_sel else "#fdecea"};'
+            f'color:{"#fff" if dub_sel else "#c62828"}">Dubizzle</span>'
+            f'</div>',
+            unsafe_allow_html=True,
         )
 
         upload = st.file_uploader(
             "Upload article file",
             type=["docx", "pdf", "txt"],
-            help=".docx recommended — headings, links and editor comments are read automatically",
+            help=".docx recommended — headings, links and editor comments are extracted automatically",
         )
-        go = st.form_submit_button(
-            "Run full evaluation",
-            use_container_width=True,
-            type="primary",
-        )
+        go = st.form_submit_button("Run full evaluation", use_container_width=True, type="primary")
 
     if not go:
         st.info(
-            "Upload a .docx file for best results. "
-            "The system reads headings, links and editor comments from the document automatically. "
-            "Category scores are based on the editor comments found in the file."
+            "Upload a .docx file. Category scores are based entirely on editor comments "
+            "found in the document. If no comments exist, full marks are awarded."
         )
         return
 
@@ -503,7 +608,6 @@ def page_submit():
         st.error(f"Could not read text from file. {parsed.get('error','')}")
         return
 
-    # Show extracted metadata
     with st.expander(
         f"Extracted from file — {len(parsed['headings'])} headings, "
         f"{len(parsed['links'])} links, {len(parsed['comments'])} editor comments"
@@ -528,7 +632,7 @@ def page_submit():
                     f'<div class="cmt-card">'
                     f'<span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
                     f'{c["text"]}'
-                    f'<div class="cmt-deduct">1 point will be deducted from final score</div>'
+                    f'<div class="cmt-deduct">1 point deducted from final score</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -538,7 +642,7 @@ def page_submit():
     prog = st.progress(0, text="Starting evaluation...")
 
     try:
-        prog.progress(20, text="Evaluating categories based on editor comments...")
+        prog.progress(20, text="Scoring categories from editor comments...")
         qa = run_qa(
             title, parsed["text"], writer, ctype, lang, platform,
             parsed["headings"], parsed["links"], parsed["comments"],
@@ -548,21 +652,24 @@ def page_submit():
         st.info("Make sure GROQ_API_KEY is set in Streamlit Settings and Secrets.")
         return
 
-    prog.progress(65, text="Running plagiarism check...")
+    prog.progress(60, text="Running plagiarism check...")
     plag = check_plagiarism(parsed["text"], parsed["links"])
 
-    prog.progress(82, text="Running AI detection...")
+    prog.progress(78, text="Running AI detection...")
     ai = check_ai(parsed["text"])
 
-    prog.progress(95, text="Calculating final score with deductions...")
+    prog.progress(90, text="Finding content issues...")
+    ai_snippets   = find_ai_snippets(parsed["text"])
+    plag_sources, plag_snippets = find_plag_snippets(parsed["text"], parsed["links"])
+
+    prog.progress(100, text="Done!")
+    prog.empty()
+
     base_score  = qa.get("total", 0)
     final_score, deductions = apply_deductions(
         base_score, parsed["comments"], plag["percentage"], ai["ai_pct"]
     )
     recommendation = get_recommendation(final_score)
-
-    prog.progress(100, text="Done!")
-    prog.empty()
 
     sub = {
         "date":            datetime.now().strftime("%d %b %Y %H:%M"),
@@ -578,6 +685,9 @@ def page_submit():
         "qa":              qa,
         "plagiarism":      plag,
         "ai_detection":    ai,
+        "ai_snippets":     ai_snippets,
+        "plag_snippets":   plag_snippets,
+        "plag_sources":    plag_sources,
         "deductions":      deductions,
         "qa_score":        final_score,
         "plagiarism_pct":  plag["percentage"],
@@ -604,9 +714,12 @@ def render_report(sub):
     grade, _ = get_grade(score)
     rec   = sub["recommendation"]
 
+    ai_snippets  = sub.get("ai_snippets", [])
+    plag_snippets = sub.get("plag_snippets", [])
+    plag_sources  = sub.get("plag_sources", [])
+
     st.divider()
 
-    # platform badge
     plat      = sub["platform"]
     bdg_class = "bdg-bay" if plat == "Bayut" else "bdg-dub"
     plat_html = f'<span class="bdg {bdg_class}">{plat}</span>'
@@ -618,7 +731,6 @@ def render_report(sub):
     )
     st.markdown("")
 
-    # score hero with deduction breakdown
     rec_labels = {
         "approve": ("Approve",          "#d1fae5", "#065f46"),
         "revise":  ("Request revision", "#fef3c7", "#92400e"),
@@ -626,53 +738,18 @@ def render_report(sub):
     }
     rl, rbg, rtc = rec_labels.get(rec, rec_labels["revise"])
 
-    breakdown_rows = (
-        f'<div class="base-row">'
-        f'<span>AI base score (from editor comments)</span>'
-        f'<span>{ded["base_score"]} / 100</span></div>'
-    )
-    if ded["comment_deduction"] > 0:
-        breakdown_rows += (
-            f'<div class="ded-row">'
-            f'<span>Editor comments ({ded["comment_count"]} comments, 1 pt each)</span>'
-            f'<span>- {ded["comment_deduction"]} pts</span></div>'
-        )
-    else:
-        breakdown_rows += (
-            '<div class="ok-row"><span>Editor comments</span>'
-            '<span>no deduction</span></div>'
-        )
+    def br(cls, label, val):
+        return f'<div class="{cls}"><span>{label}</span><span>{val}</span></div>'
 
-    if ded["plag_deduction"] > 0:
-        breakdown_rows += (
-            f'<div class="ded-row">'
-            f'<span>Plagiarism {ded["plag_pct"]}% — over 20% threshold</span>'
-            f'<span>- {ded["plag_deduction"]} pts</span></div>'
-        )
-    else:
-        breakdown_rows += (
-            f'<div class="ok-row">'
-            f'<span>Plagiarism {ded["plag_pct"]}% — under 20% threshold</span>'
-            f'<span>no deduction</span></div>'
-        )
-
-    if ded["ai_deduction"] > 0:
-        breakdown_rows += (
-            f'<div class="ded-row">'
-            f'<span>AI content {ded["ai_pct"]}% — over 20% threshold</span>'
-            f'<span>- {ded["ai_deduction"]} pts</span></div>'
-        )
-    else:
-        breakdown_rows += (
-            f'<div class="ok-row">'
-            f'<span>AI content {ded["ai_pct"]}% — under 20% threshold</span>'
-            f'<span>no deduction</span></div>'
-        )
-
-    breakdown_rows += (
-        f'<div class="total-row">'
-        f'<span>Final score</span>'
-        f'<span>{score} / 100</span></div>'
+    breakdown = (
+        br("base-row", "Base score (from editor comments)", f'{ded["base_score"]} / 100') +
+        (br("ded-row", f'Editor comments ({ded["comment_count"]} comments, 1 pt each)', f'- {ded["comment_deduction"]} pts')
+         if ded["comment_deduction"] > 0 else br("ok-row", "Editor comments", "no deduction")) +
+        (br("ded-row", f'Plagiarism {ded["plag_pct"]}% — over 20% threshold', f'- {ded["plag_deduction"]} pts')
+         if ded["plag_deduction"] > 0 else br("ok-row", f'Plagiarism {ded["plag_pct"]}% — under 20% threshold', "no deduction")) +
+        (br("ded-row", f'AI content {ded["ai_pct"]}% — over 20% threshold', f'- {ded["ai_deduction"]} pts')
+         if ded["ai_deduction"] > 0 else br("ok-row", f'AI content {ded["ai_pct"]}% — under 20% threshold', "no deduction")) +
+        br("total-row", "Final score", f"{score} / 100")
     )
 
     st.markdown(
@@ -682,104 +759,126 @@ def render_report(sub):
         f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;'
         f'border-radius:20px;background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
         f'<div class="score-verdict">{qa.get("overall_feedback","")}</div>'
-        f'<div class="breakdown-box">{breakdown_rows}</div>'
+        f'<div class="breakdown-box">{breakdown}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
     st.divider()
 
-    # ── automated checks with clear threshold display ──────────────────────
+    # ── plagiarism and AI cards with content snippets ──────────────────────
     st.markdown("#### Plagiarism and AI detection")
     pc1, pc2 = st.columns(2)
 
     with pc1:
-        plag_pct    = plag["percentage"]
-        plag_over   = plag_pct > 20
-        plag_color  = "#dc2626" if plag_over else "#059669"
-        plag_bar_bg = "#dc2626" if plag_over else "#059669"
-        plag_thresh = (
-            f'<span class="detect-threshold" style="background:#fee2e2;color:#991b1b">'
-            f'Over 20% threshold — 5 points deducted</span>'
+        plag_pct   = plag["percentage"]
+        plag_over  = plag_pct > 20
+        p_color    = "#dc2626" if plag_over else "#059669"
+        p_thresh   = (
+            f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">'
+            f'{plag_pct}% — over 20% threshold — 5 points deducted</span>'
             if plag_over else
-            f'<span class="detect-threshold" style="background:#d1fae5;color:#065f46">'
-            f'Under 20% threshold — no deduction</span>'
+            f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">'
+            f'{plag_pct}% — under 20% threshold — no deduction</span>'
         )
-        plag_sources = ""
-        if plag["flagged_sources"]:
-            plag_sources = "".join(
-                f'<div style="font-size:10px;color:#666;margin-top:3px">Source: {s}</div>'
-                for s in plag["flagged_sources"]
-            )
+        # build snippets HTML
+        snip_html = ""
+        if plag_over and (plag_snippets or plag_sources):
+            snip_html = '<div class="issue-block"><div class="issue-block-title">Flagged content</div>'
+            for src in plag_sources[:2]:
+                snip_html += f'<div class="issue-snippet">Source matched: {src}</div>'
+            for s in plag_snippets[:2]:
+                snip_html += f'<div class="issue-snippet">{s}</div>'
+            snip_html += '</div>'
+
         st.markdown(
             f'<div class="detect-card">'
             f'<div class="detect-title">Plagiarism check</div>'
-            f'<div class="detect-pct" style="color:{plag_color}">{plag_pct}%</div>'
-            f'<div class="detect-bar">'
-            f'<div class="detect-bar-f" style="width:{min(plag_pct,100)}%;background:{plag_bar_bg}"></div>'
+            f'<div class="detect-bar"><div class="detect-bar-f" '
+            f'style="width:{min(plag_pct,100)}%;background:{p_color}"></div></div>'
+            f'{p_thresh}'
+            f'<div class="detect-note">'
+            f'{"Content matched external sources. Rewrite the flagged sections completely." if plag_over else "Content is within the acceptable range."}'
             f'</div>'
-            f'{plag_thresh}'
-            f'<div class="detect-note">Threshold is 20%. '
-            f'{"Content matched external sources. Rewrite flagged sections." if plag_over else "Content is within acceptable range."}'
-            f'{plag_sources}'
-            f'</div></div>',
+            f'{snip_html}'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
     with pc2:
-        ai_pct    = ai["ai_pct"]
-        ai_over   = ai_pct > 20
-        ai_color  = "#dc2626" if ai_over else "#059669"
-        ai_thresh = (
-            f'<span class="detect-threshold" style="background:#fee2e2;color:#991b1b">'
-            f'Over 20% threshold — 5 points deducted</span>'
+        ai_pct   = ai["ai_pct"]
+        ai_over  = ai_pct > 20
+        a_color  = "#dc2626" if ai_over else "#059669"
+        a_thresh = (
+            f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">'
+            f'{ai_pct}% — over 20% threshold — 5 points deducted</span>'
             if ai_over else
-            f'<span class="detect-threshold" style="background:#d1fae5;color:#065f46">'
-            f'Under 20% threshold — no deduction</span>'
+            f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">'
+            f'{ai_pct}% — under 20% threshold — no deduction</span>'
         )
+        # highlight AI phrases in snippets
+        snip_html = ""
+        if ai_over and ai_snippets:
+            snip_html = '<div class="issue-block"><div class="issue-block-title">Flagged sentences</div>'
+            for s in ai_snippets[:3]:
+                highlighted = s
+                for phrase in AI_PHRASES:
+                    if phrase in highlighted.lower():
+                        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+                        highlighted = pattern.sub(
+                            f'<span class="ai-highlight">{phrase}</span>', highlighted
+                        )
+                snip_html += f'<div class="issue-snippet">{highlighted}</div>'
+            snip_html += '</div>'
+
         st.markdown(
             f'<div class="detect-card">'
             f'<div class="detect-title">AI content detection</div>'
-            f'<div class="detect-pct" style="color:{ai_color}">{ai_pct}%</div>'
-            f'<div class="detect-bar">'
-            f'<div class="detect-bar-f" style="width:{min(ai_pct,100)}%;background:{ai_color}"></div>'
-            f'</div>'
-            f'{ai_thresh}'
-            f'<div class="detect-note">Threshold is 20%. '
-            f'{"High AI content detected. Rewrite in human voice." if ai_over else "Content appears mostly human-written."}'
+            f'<div class="detect-bar"><div class="detect-bar-f" '
+            f'style="width:{min(ai_pct,100)}%;background:{a_color}"></div></div>'
+            f'{a_thresh}'
+            f'<div class="detect-note">'
+            f'{"High AI content detected. Flagged sentences shown below." if ai_over else "Content appears mostly human-written."}'
             f'</div>'
             f'<div class="detect-split">'
             f'<div class="detect-seg"><div class="detect-seg-n" style="color:#059669">{ai["human_pct"]}%</div>'
             f'<div class="detect-seg-l">Human</div></div>'
-            f'<div class="detect-seg"><div class="detect-seg-n" style="color:{ai_color}">{ai_pct}%</div>'
+            f'<div class="detect-seg"><div class="detect-seg-n" style="color:{a_color}">{ai_pct}%</div>'
             f'<div class="detect-seg-l">AI likely</div></div>'
-            f'</div></div>',
+            f'</div>'
+            f'{snip_html}'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
     st.divider()
 
-    # ── category scores — driven by comments ──────────────────────────────
-    st.markdown("#### Category scores — based on editor comments")
-    st.caption("Each category score reflects the issues raised in the editor comments. Categories with no comments are scored on content quality.")
+    # ── category scores ────────────────────────────────────────────────────
+    st.markdown("#### Category scores")
+    if not sub["comments"]:
+        st.markdown(
+            '<div class="no-comments-notice">'
+            'No editor comments were found in the uploaded file. '
+            'All categories have been awarded full marks. '
+            'Add editor comments to the document to get a meaningful score.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     for cat, mx in CAT_MAX.items():
-        data       = qa["scores"].get(cat, {})
-        s          = data.get("score", 0)
-        feedback   = data.get("feedback", "")
-        refs       = data.get("comment_refs", [])
+        data     = qa["scores"].get(cat, {})
+        s        = data.get("score", 0)
+        feedback = data.get("feedback", "")
+        refs     = data.get("comment_refs", [])
 
         col_a, col_b = st.columns([4, 1])
         ref_html = ""
         if refs:
             ref_html = " ".join(
-                f'<span class="cat-comment-tag">Comment {r}</span>'
-                for r in refs
+                f'<span class="cat-ref">Comment {r}</span>' for r in refs
             )
-
         col_a.markdown(
-            f"**{cat}**"
-            + (f' &nbsp; {ref_html}' if ref_html else ""),
+            f"**{cat}**" + (f' &nbsp; {ref_html}' if ref_html else ""),
             unsafe_allow_html=True,
         )
         col_a.progress(s / mx)
@@ -789,17 +888,16 @@ def render_report(sub):
 
     st.divider()
 
-    # ── structure ──────────────────────────────────────────────────────────
+    # structure
     st.markdown("#### Document structure")
     sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("Headings",      len(sub["headings"]))
-    sc2.metric("Total links",   len(sub["links"]))
+    sc1.metric("Headings",       len(sub["headings"]))
+    sc2.metric("Total links",    len(sub["links"]))
     internal = [l for l in sub["links"] if sub["platform"].lower() in l.lower()]
     sc3.metric("Internal links", len(internal))
 
-    # editor comments with deduction labels
     if sub["comments"]:
-        st.markdown(f"**Editor comments ({len(sub['comments'])} found — 1 point deducted each)**")
+        st.markdown(f"**Editor comments — {len(sub['comments'])} found**")
         for idx, c in enumerate(sub["comments"], 1):
             st.markdown(
                 f'<div class="cmt-card">'
@@ -812,41 +910,39 @@ def render_report(sub):
 
     st.divider()
 
-    # strengths and improvements
     col_s, col_i = st.columns(2)
     with col_s:
         st.markdown("#### Strengths")
-        for s in qa.get("key_strengths", []):
-            st.markdown(f'<span class="tag-str">{s}</span>', unsafe_allow_html=True)
+        strengths = qa.get("key_strengths", [])
+        if strengths:
+            for s in strengths:
+                st.markdown(f'<span class="tag-str">{s}</span>', unsafe_allow_html=True)
+        else:
+            st.caption("Strengths will appear once editor comments are provided.")
     with col_i:
         st.markdown("#### Required improvements")
         for imp in qa.get("areas_for_improvement", []):
             st.markdown(f'<span class="tag-imp">{imp}</span>', unsafe_allow_html=True)
 
-    st.divider()
-
-    # suggestions
     suggestions = qa.get("suggestions", [])
     if suggestions:
+        st.divider()
         st.markdown("#### Suggestions to improve the article")
-        st.caption("Specific actions the writer should take to raise the score")
+        st.caption("Specific actions to address each editor comment")
         for sug in suggestions:
             st.markdown(
                 f'<div class="suggest-item">'
                 f'<div class="suggest-num">{sug.get("number","")}</div>'
-                f'<div>'
-                f'<div>{sug.get("action","")}</div>'
+                f'<div><div>{sug.get("action","")}</div>'
                 f'<div class="suggest-cat">Addresses: {sug.get("category","")}</div>'
                 f'</div></div>',
                 unsafe_allow_html=True,
             )
 
     st.divider()
-
-    # editor decision
     st.markdown("#### Editor decision")
     st.caption("The AI recommendation is a guide. You make the final call.")
-    rec_idx = {"approve": 0, "revise": 1, "reject": 2}
+    rec_idx  = {"approve": 0, "revise": 1, "reject": 2}
     decision = st.radio(
         "Decision",
         ["Approve", "Request revision", "Reject"],
@@ -860,12 +956,8 @@ def render_report(sub):
         placeholder="Tell the writer exactly what to fix.",
         key=f"notes_{sub['title']}_{sub['date']}",
     )
-    if st.button(
-        "Confirm decision",
-        type="primary",
-        use_container_width=True,
-        key=f"conf_{sub['title']}_{sub['date']}",
-    ):
+    if st.button("Confirm decision", type="primary", use_container_width=True,
+                 key=f"conf_{sub['title']}_{sub['date']}"):
         if decision in ("Request revision", "Reject") and not notes.strip():
             st.error("Please add notes for the writer before confirming.")
         else:
@@ -876,10 +968,7 @@ def render_report(sub):
             if notes:
                 st.info(f"Notes for {sub['writer']}: {notes}")
 
-    st.caption(
-        f"Content QA System — {sub['platform']} — "
-        f"Powered by Groq — {sub['date']}"
-    )
+    st.caption(f"Content QA System — {sub['platform']} — Powered by Groq — {sub['date']}")
 
 
 # ── dashboard ──────────────────────────────────────────────────────────────
@@ -895,7 +984,6 @@ def page_dashboard():
         st.info("No submissions yet. Go to Submit article to start.")
         return
 
-    # summary metrics
     approved = sum(1 for s in all_subs if s.get("editor_decision") == "Approve")
     revision = sum(1 for s in all_subs if s.get("editor_decision") == "Request revision")
     rejected = sum(1 for s in all_subs if s.get("editor_decision") == "Reject")
@@ -910,10 +998,8 @@ def page_dashboard():
 
     st.divider()
 
-    # filters — including writer filter
+    all_writers   = sorted(set(s["writer"] for s in all_subs if s.get("writer")))
     f1, f2, f3, f4, f5 = st.columns(5)
-
-    all_writers = sorted(set(s["writer"] for s in all_subs if s.get("writer")))
     writer_filter = f1.selectbox("Writer",       ["All"] + all_writers)
     plat_filter   = f2.selectbox("Platform",     ["All"] + PLATFORMS)
     type_filter   = f3.selectbox("Content type", ["All"] + CONTENT_TYPES)
@@ -921,10 +1007,10 @@ def page_dashboard():
     status_filter = f5.selectbox("Status",       ["All", "Pending", "Approve", "Request revision", "Reject"])
 
     filtered = all_subs
-    if writer_filter != "All": filtered = [s for s in filtered if s.get("writer") == writer_filter]
-    if plat_filter   != "All": filtered = [s for s in filtered if s["platform"]     == plat_filter]
-    if type_filter   != "All": filtered = [s for s in filtered if s["content_type"] == type_filter]
-    if lang_filter   != "All": filtered = [s for s in filtered if s["language"]     == lang_filter]
+    if writer_filter != "All": filtered = [s for s in filtered if s.get("writer")       == writer_filter]
+    if plat_filter   != "All": filtered = [s for s in filtered if s["platform"]         == plat_filter]
+    if type_filter   != "All": filtered = [s for s in filtered if s["content_type"]     == type_filter]
+    if lang_filter   != "All": filtered = [s for s in filtered if s["language"]         == lang_filter]
     if status_filter != "All":
         if status_filter == "Pending":
             filtered = [s for s in filtered if not s.get("editor_decision")]
@@ -932,19 +1018,16 @@ def page_dashboard():
             filtered = [s for s in filtered if s.get("editor_decision") == status_filter]
 
     st.markdown(f"**{len(filtered)} submissions**")
-
     for sub in reversed(filtered):
-        grade, _ = get_grade(sub["qa_score"])
-        plat      = sub["platform"]
         dec       = sub.get("editor_decision") or "Pending"
-        plag_flag = " — High plagiarism" if sub.get("plagiarism_pct", 0) > 20 else ""
-        ai_flag   = " — High AI content" if sub.get("ai_pct", 0) > 20 else ""
-        exp_label = (
-            f"{sub['writer']} ({plat}) — "
+        plag_flag = "  High plagiarism" if sub.get("plagiarism_pct", 0) > 20 else ""
+        ai_flag   = "  High AI content" if sub.get("ai_pct", 0) > 20 else ""
+        label = (
+            f"{sub['writer']} ({sub['platform']}) — "
             f"{sub['title'][:45]}{'...' if len(sub['title'])>45 else ''} "
             f"| Score: {sub['qa_score']} | {dec}{plag_flag}{ai_flag} | {sub['date']}"
         )
-        with st.expander(exp_label):
+        with st.expander(label):
             render_report(sub)
 
 
