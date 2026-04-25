@@ -498,17 +498,6 @@ def sidebar():
         page = st.radio("Go to", ["Submit article", "Dashboard"],
                         label_visibility="collapsed")
         st.divider()
-        st.markdown("### Score guide")
-        st.markdown("""
-| Score | Grade |
-|---|---|
-| 90 – 100 | Approve |
-| 80 – 89  | Approve |
-| 70 – 79  | Revise  |
-| 60 – 69  | Revise  |
-| Below 60 | Reject  |
-        """)
-        st.divider()
         st.markdown("### Deduction rules")
         st.markdown("""
 | Rule | Points |
