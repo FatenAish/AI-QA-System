@@ -345,8 +345,8 @@ def find_plag_snippets(text, links):
 
 
 def highlight_plag_sentence(sentence):
-    """Wrap brochure phrases in a sentence with red highlight HTML."""
-    highlight_phrases = [
+    """Wrap brochure phrases with red highlight using lambda to avoid backreference issues."""
+    phrases = [
         "world-class", "highly anticipated", "off-plan", "master plan", "masterplan",
         "seamlessly integrat", "self-sustaining", "eco-friendly", "strategically located",
         "boasts", "setting the benchmark", "unparalleled", "luxury finishes",
@@ -359,132 +359,23 @@ def highlight_plag_sentence(sentence):
         "peaceful seclusion", "dynamic pulse", "elevated everyday living",
         "opulent master suite", "certainly. here are", "mentioned in the brochure",
         "effortlessly blends", "metropolitan accessibility", "distinguished residential",
-        "embody contemporary", "natural light", "light and dark material finishes",
-        "open-plan configuration", "eco-living", "light pollution",
+        "embody contemporary", "light and dark material finishes", "eco-living",
         "pedestrian-friendly", "responsible, sustainable", "tranquillity",
         "immersive community", "culture, leisure", "premium lifestyle",
-        "wellness amenities", "forward-looking environmental",
+        "wellness amenities", "forward-looking environmental", "open-plan configuration",
+        "state-of-the-art", "premium residential", "wellness-oriented enclave",
+        "lush landscaped buffers", "smart-home integrations",
     ]
     result = sentence
-    for phrase in highlight_phrases:
-        pat = re.compile(r"(" + re.escape(phrase) + r")", re.IGNORECASE)
-        result = pat.sub(
-            r'<span style="background:#fecaca;border-radius:3px;padding:0 2px;font-weight:500;color:#7f1d1d"></span>',
-            result,
-        )
+    for phrase in phrases:
+        pat = re.compile(re.escape(phrase), re.IGNORECASE)
+        def make_mark(m):
+            return ('<mark style="background:#fecaca;border-radius:3px;'
+                    'padding:0 3px;font-weight:500;color:#7f1d1d">'
+                    + m.group(0) + "</mark>")
+        result = pat.sub(make_mark, result)
     return result
 
-
-# ── scoring ────────────────────────────────────────────────────────────────
-def apply_deductions(base_score, comments, plag_pct, ai_pct):
-    comment_deduction = len(comments)
-    plag_deduction    = 5 if plag_pct > 20 else 0
-    ai_deduction      = 5 if ai_pct   > 20 else 0
-    final             = max(0, base_score - comment_deduction - plag_deduction - ai_deduction)
-    return final, {
-        "base_score":        base_score,
-        "comment_count":     len(comments),
-        "comment_deduction": comment_deduction,
-        "plag_pct":          plag_pct,
-        "plag_deduction":    plag_deduction,
-        "ai_pct":            ai_pct,
-        "ai_deduction":      ai_deduction,
-        "final_score":       final,
-    }
-
-def get_recommendation(score):
-    if score >= 80: return "approve"
-    if score >= 60: return "revise"
-    return "reject"
-
-def get_grade(score):
-    for t, label, color in GRADE_MAP:
-        if score >= t:
-            return label, color
-    return GRADE_MAP[-1][1], GRADE_MAP[-1][2]
-
-
-# ── QA evaluation ── only scores from comments, max score if no comments ───
-def run_qa(title, content, writer, ctype, lang, platform, headings, links, comments):
-    h_txt = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None"
-    l_txt = "\n".join(f"  - {l}" for l in links[:8])                      or "  None"
-
-    if not comments:
-        # No comments — give max scores across all categories, no AI opinion
-        scores = {cat: {"score": mx, "feedback": "No editor comments found. Full marks awarded.", "comment_refs": []}
-                  for cat, mx in CAT_MAX.items()}
-        total = sum(CAT_MAX.values())
-        return {
-            "scores":               scores,
-            "total":                total,
-            "overall_feedback":     "No editor comments were found in the uploaded file. All categories have been awarded full marks. Scores will be adjusted if editor comments are added.",
-            "key_strengths":        [],
-            "areas_for_improvement":[],
-            "suggestions":          [],
-        }
-
-    c_txt = "\n".join(
-        f"  Comment {i+1} [{c['author']}]: {c['text']}"
-        for i, c in enumerate(comments)
-    )
-
-    prompt = f"""You are a senior content QA evaluator for {platform}, a leading UAE real estate platform.
-
-TITLE: {title}
-WRITER: {writer}
-CONTENT TYPE: {ctype}
-LANGUAGE: {lang}
-
-HEADINGS IN FILE:
-{h_txt}
-
-LINKS IN FILE:
-{l_txt}
-
-EDITOR COMMENTS FROM FILE:
-{c_txt}
-
-ARTICLE CONTENT (for context only — do NOT score independently):
-{content[:3000]}
-
-CRITICAL RULES:
-1. Score ONLY based on the editor comments listed above. Do NOT independently evaluate the article content.
-2. Map each comment to the most relevant category and reduce that category's score.
-3. If no comments relate to a category, award that category its MAXIMUM score.
-4. Every comment MUST be reflected in at least one category's score and feedback.
-5. "comment_refs" must list the comment numbers (1, 2, 3...) that affected each category.
-6. Suggestions must directly address the comments — do not invent new issues.
-
-Return ONLY valid JSON:
-{{
-  "scores": {{
-    "Content Quality":    {{"score": <0-25>, "feedback": "<what comments flagged>", "comment_refs": []}},
-    "SEO & Structure":    {{"score": <0-20>, "feedback": "<what comments flagged>", "comment_refs": []}},
-    "Language & Grammar": {{"score": <0-20>, "feedback": "<what comments flagged>", "comment_refs": []}},
-    "Brand Voice":        {{"score": <0-15>, "feedback": "<what comments flagged>", "comment_refs": []}},
-    "Readability & Flow": {{"score": <0-10>, "feedback": "<what comments flagged>", "comment_refs": []}},
-    "Originality":        {{"score": <0-10>, "feedback": "<what comments flagged>", "comment_refs": []}}
-  }},
-  "total": <sum>,
-  "overall_feedback": "<summary referencing the specific comments>",
-  "key_strengths": [],
-  "areas_for_improvement": ["<from comment 1>", "<from comment 2>"],
-  "suggestions": [
-    {{"number": 1, "action": "<specific fix from comment 1>", "category": "<category>"}},
-    {{"number": 2, "action": "<specific fix from comment 2>", "category": "<category>"}},
-    {{"number": 3, "action": "<specific fix from comment 3>", "category": "<category>"}}
-  ]
-}}"""
-
-    raw   = call_ai(prompt)
-    clean = re.sub(r"```json|```", "", raw).strip()
-    match = re.search(r'\{.*\}', clean, re.DOTALL)
-    if match:
-        clean = match.group(0)
-    return json.loads(clean)
-
-
-# ── plagiarism heuristic ───────────────────────────────────────────────────
 def check_plagiarism(text, links):
     """Score plagiarism based on brochure phrase density — works without source links."""
     flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
@@ -516,16 +407,19 @@ def check_plagiarism(text, links):
 
     text_lower = text.lower()
     hits = sum(1 for p in brochure_score_phrases if p in text_lower)
-    word_count = max(len(text.split()), 1)
+    total_phrases = len(brochure_score_phrases)
 
-    # Each hit in a 1000-word article contributes ~3-4%
-    base_pct  = min(int((hits / max(word_count / 250, 1)) * 12), 75)
-    link_bonus = min(len(flagged_sources) * 6, 20)
+    # Scale: 0 hits=0%, 5 hits=15%, 10 hits=30%, 20 hits=55%, 30+=75%
+    # Uses square-root curve so early hits matter more
+    import math
+    base_pct   = min(int((math.sqrt(hits) / math.sqrt(total_phrases)) * 60), 60)
+    link_bonus = min(len(flagged_sources) * 4, 15)
     pct        = min(base_pct + link_bonus, 100)
 
     return {
         "percentage":      pct,
         "flagged_sources": flagged_sources,
+        "hits":            hits,
         "status":          "danger" if pct > 20 else "warn" if pct > 10 else "safe",
     }
 
