@@ -166,6 +166,9 @@ def call_ai(prompt):
 def extract_docx(raw):
     if not DOCX_OK:
         return {"text":"","headings":[],"links":[],"comments":[],"word_count":0,"error":"python-docx not installed"}
+    import zipfile
+    from lxml import etree as _etree
+
     doc = Document(BytesIO(raw))
     text, headings, links = [], [], []
     for p in doc.paragraphs:
@@ -179,17 +182,22 @@ def extract_docx(raw):
     for rel in doc.part.rels.values():
         if "hyperlink" in rel.reltype:
             links.append(rel._target)
+
+    # Extract comments directly from the zip — works reliably across all Word versions
     comments = []
     try:
-        cp = doc.part.package.part_related_by(
-            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments")
-        for c in cp._element.findall(
-            ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}comment"):
-            author = c.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author","Editor")
-            body   = " ".join(x.text for x in c.iter() if x.text).strip()
-            if body: comments.append({"author":author,"text":body})
+        WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        with zipfile.ZipFile(BytesIO(raw)) as z:
+            if "word/comments.xml" in z.namelist():
+                root = _etree.fromstring(z.read("word/comments.xml"))
+                for c in root.findall(f".//{{{WNS}}}comment"):
+                    author = c.get(f"{{{WNS}}}author", "Editor")
+                    body   = " ".join(c.itertext()).strip()
+                    if body:
+                        comments.append({"author": author, "text": body})
     except Exception:
         pass
+
     full = "\n".join(text)
     return {"text":full,"headings":headings,"links":links,"comments":comments,"word_count":len(full.split()),"error":""}
 
