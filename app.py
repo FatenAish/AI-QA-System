@@ -575,8 +575,6 @@ def page_submit():
             f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
             f'background:{"#c62828" if not bay else "#fdecea"};color:{"#fff" if not bay else "#c62828"}">Dubizzle</span>'
             f'</div>',unsafe_allow_html=True)
-        editor_name = st.text_input("Editor name (only this person's comments will count)",
-                    placeholder="e.g. Faten Aish — leave empty to count all comments")
         upload = st.file_uploader("Upload article file",type=["docx","pdf","txt"],
                     help=".docx recommended — headings, links and editor comments are extracted automatically")
         go = st.form_submit_button("Run full evaluation",use_container_width=True,type="primary")
@@ -595,15 +593,30 @@ def page_submit():
         st.error(f"Could not read text from file. {parsed.get('error','')}")
         return
 
-    # Filter comments to editor only if name provided
-    if editor_name.strip():
-        all_comments   = parsed["comments"]
-        editor_comments = [c for c in all_comments
-                           if editor_name.strip().lower() in c["author"].lower()]
-        parsed["comments"]     = editor_comments
-        parsed["all_comments"] = all_comments
-    else:
-        parsed["all_comments"] = parsed["comments"]
+    # Auto-detect editor comments vs writer replies
+    # Writer replies typically contain: "fixed", "done", "added", "removed",
+    # "replaced", "updated", "@", "changed" — editor comments are questions/issues
+    writer_reply_keywords = [
+        "fixed", "done", "added", "removed", "replaced", "updated",
+        "changed", "edited", "deleted", "corrected", "revised",
+        "@", "noted", "ok ", "okay", "sure", "will do",
+    ]
+
+    def is_writer_reply(comment_text):
+        low = comment_text.lower().strip()
+        # Pure @mentions are always writer responses
+        if low.startswith("@"): return True
+        # Short replies like "Fixed." are writer responses
+        if len(low) < 30:
+            for kw in writer_reply_keywords:
+                if low.startswith(kw) or kw in low[:20]:
+                    return True
+        return False
+
+    all_comments    = parsed["comments"]
+    editor_comments = [c for c in all_comments if not is_writer_reply(c["text"])]
+    parsed["comments"]     = editor_comments
+    parsed["all_comments"] = all_comments
 
     with st.expander(f"Extracted — {len(parsed['headings'])} headings, {len(parsed['links'])} links, {len(parsed['comments'])} editor comments"):
         col_h,col_l,col_c = st.columns(3)
