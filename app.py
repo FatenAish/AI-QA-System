@@ -276,14 +276,87 @@ def parse_file(f):
 
 
 # ── scoring ────────────────────────────────────────────────────────────────
+def classify_comment(text):
+    """Classify editor comment into type using keywords. Returns (type, deduction)."""
+    low = text.lower()
+    # Data accuracy — factual errors, wrong numbers, wrong info
+    data_accuracy_kw = [
+        "wrong", "incorrect", "not correct", "inaccurate", "error",
+        "should be", "it is", "it's", "the source", "in the source",
+        "copied", "from google", "from maps", "url goes", "link goes",
+        "apartments", "no apartments", "mins away", "minutes away",
+        "under construction", "off-plan", "data", "fact",
+    ]
+    # Missing info — content gaps
+    missing_info_kw = [
+        "missing", "add", "please add", "include", "mention", "not mentioned",
+        "should mention", "we need", "please mention", "go through",
+        "available", "please write", "write the branch", "notable projects",
+        "specific", "more details", "lacks", "header", "section",
+    ]
+    # Grammar / rephrasing
+    grammar_kw = [
+        "grammar", "rephrase", "rewrite", "word", "sentence", "phrasing",
+        "general", "too general", "vague", "unclear", "confusing",
+        "brand voice", "tone", "style", "read", "sounds",
+    ]
+
+    for kw in data_accuracy_kw:
+        if kw in low:
+            return "Data accuracy", 1.5
+    for kw in missing_info_kw:
+        if kw in low:
+            return "Missing info", 1.5
+    for kw in grammar_kw:
+        if kw in low:
+            return "Grammar / rephrasing", 1.0
+    # Default — treat as grammar/rephrasing
+    return "Grammar / rephrasing", 1.0
+
+
 def apply_deductions(base_score, comments, plag_pct, ai_pct):
-    c = len(comments)
-    p = 5 if plag_pct > 20 else 0
-    a = 5 if ai_pct   > 20 else 0
-    final = max(0, base_score - c - p - a)
-    return final, {"base_score":base_score,"comment_count":len(comments),
-                   "comment_deduction":c,"plag_pct":plag_pct,"plag_deduction":p,
-                   "ai_pct":ai_pct,"ai_deduction":a,"final_score":final}
+    """
+    Scoring rules:
+    - Base: 100
+    - Data accuracy comment: -1.5 pts each
+    - Missing info comment:   -1.5 pts each
+    - Grammar/rephrasing:     -1.0 pt each
+    - Plagiarism: -5 pts per 20% (40%=-10, 60%=-15 etc.)
+    - AI content: -5 pts per 20% (same scale)
+    """
+    base = 100
+
+    # Classify each comment and sum deductions
+    classified = []
+    comment_deduction = 0.0
+    for c in comments:
+        ctype, pts = classify_comment(c["text"])
+        classified.append({"author":c["author"],"text":c["text"],"type":ctype,"deduction":pts})
+        comment_deduction += pts
+
+    # Plagiarism: -5 per 20% bracket
+    plag_brackets  = int(plag_pct // 20)
+    plag_deduction = plag_brackets * 5
+
+    # AI: -5 per 20% bracket
+    ai_brackets  = int(ai_pct // 20)
+    ai_deduction = ai_brackets * 5
+
+    final = max(0, round(base - comment_deduction - plag_deduction - ai_deduction, 1))
+
+    return final, {
+        "base_score":        base,
+        "comment_count":     len(comments),
+        "comment_deduction": round(comment_deduction, 1),
+        "classified":        classified,
+        "plag_pct":          plag_pct,
+        "plag_brackets":     plag_brackets,
+        "plag_deduction":    plag_deduction,
+        "ai_pct":            ai_pct,
+        "ai_brackets":       ai_brackets,
+        "ai_deduction":      ai_deduction,
+        "final_score":       final,
+    }
 
 def get_recommendation(score):
     return "approve" if score >= 80 else "reject" if score < 60 else "revise"
@@ -708,14 +781,47 @@ def render_report(sub):
     def brow(cls,label,val):
         return f'<div class="{cls}"><span>{label}</span><span>{val}</span></div>'
 
+    # Build comment breakdown by type
+    classified     = ded.get("classified", [])
+    data_acc_cmts  = [c for c in classified if c["type"]=="Data accuracy"]
+    missing_cmts   = [c for c in classified if c["type"]=="Missing info"]
+    grammar_cmts   = [c for c in classified if c["type"]=="Grammar / rephrasing"]
+
+    comment_rows = ""
+    if data_acc_cmts:
+        comment_rows += brow("ded-row",
+            f'Data accuracy ({len(data_acc_cmts)} comments × 1.5 pts)',
+            f'- {round(len(data_acc_cmts)*1.5,1)} pts')
+    if missing_cmts:
+        comment_rows += brow("ded-row",
+            f'Missing info ({len(missing_cmts)} comments × 1.5 pts)',
+            f'- {round(len(missing_cmts)*1.5,1)} pts')
+    if grammar_cmts:
+        comment_rows += brow("ded-row",
+            f'Grammar / rephrasing ({len(grammar_cmts)} comments × 1 pt)',
+            f'- {len(grammar_cmts)} pts')
+    if not classified:
+        comment_rows = brow("ok-row","Editor comments","no deduction")
+
+    # Plagiarism brackets
+    plag_b  = ded.get("plag_brackets",0)
+    plag_row = (brow("ded-row",
+        f'Plagiarism {ded["plag_pct"]}% ({plag_b} × 20% bracket × 5 pts)',
+        f'- {ded["plag_deduction"]} pts')
+        if ded["plag_deduction"]>0
+        else brow("ok-row",f'Plagiarism {ded["plag_pct"]}% — under 20%',"no deduction"))
+
+    # AI brackets
+    ai_b  = ded.get("ai_brackets",0)
+    ai_row = (brow("ded-row",
+        f'AI content {ded["ai_pct"]}% ({ai_b} × 20% bracket × 5 pts)',
+        f'- {ded["ai_deduction"]} pts')
+        if ded["ai_deduction"]>0
+        else brow("ok-row",f'AI content {ded["ai_pct"]}% — under 20%',"no deduction"))
+
     bd = (
-        brow("base-row","Base score (from editor comments)",f'{ded["base_score"]} / 100') +
-        (brow("ded-row",f'Editor comments ({ded["comment_count"]} comments, 1 pt each)',f'- {ded["comment_deduction"]} pts')
-         if ded["comment_deduction"]>0 else brow("ok-row","Editor comments","no deduction")) +
-        (brow("ded-row",f'Plagiarism {ded["plag_pct"]}% — over 20% threshold',f'- {ded["plag_deduction"]} pts')
-         if ded["plag_deduction"]>0 else brow("ok-row",f'Plagiarism {ded["plag_pct"]}% — under 20%',"no deduction")) +
-        (brow("ded-row",f'AI content {ded["ai_pct"]}% — over 20% threshold',f'- {ded["ai_deduction"]} pts')
-         if ded["ai_deduction"]>0 else brow("ok-row",f'AI content {ded["ai_pct"]}% — under 20%',"no deduction")) +
+        brow("base-row","Base score",f'{ded["base_score"]} / 100') +
+        comment_rows + plag_row + ai_row +
         brow("total-row","Final score",f"{score} / 100")
     )
 
@@ -809,11 +915,25 @@ def render_report(sub):
     sc3.metric("Internal links",len(internal))
 
     if sub["comments"]:
+        classified = ded.get("classified", [])
+        cmap = {c["text"]: c for c in classified}
+        type_colors = {
+            "Data accuracy":      ("#fee2e2","#991b1b","- 1.5 pts"),
+            "Missing info":       ("#fef3c7","#92400e","- 1.5 pts"),
+            "Grammar / rephrasing":("#f0f4ff","#2D4A8A","- 1 pt"),
+        }
         st.markdown(f"**Editor comments — {len(sub['comments'])} found**")
         for idx,c in enumerate(sub["comments"],1):
+            info    = cmap.get(c["text"], {})
+            ctype   = info.get("type","Grammar / rephrasing")
+            bg,tc,pts = type_colors.get(ctype, ("#f5f6fa","#555","- 1 pt"))
             st.markdown(
-                f'<div class="cmt-card"><span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
-                f'{c["text"]}<div class="cmt-deduct">1 point deducted</div></div>',
+                f'<div class="cmt-card">'
+                f'<span class="cmt-author">Comment {idx} — {c["author"]}</span>'
+                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;'
+                f'background:{bg};color:{tc};margin-left:8px">{ctype}</span><br>'
+                f'{c["text"]}'
+                f'<div class="cmt-deduct">{pts} deducted</div></div>',
                 unsafe_allow_html=True)
 
     st.divider()
