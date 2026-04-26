@@ -675,14 +675,6 @@ def render_report(sub):
             f'{thresh}<div class="detect-note">{"Rewrite all flagged sections completely." if over else "Content is within acceptable range."}</div>'
             f'{snip_html}</div>',unsafe_allow_html=True)
 
-        # TextGuard button for full internet plagiarism check
-        st.link_button(
-            '🔍  Run full web plagiarism check on TextGuard',
-            'https://textguard.ai/plagiarism',
-            use_container_width=True,
-            help='Opens TextGuard — paste the article there for a full internet-wide scan'
-        )
-        st.caption('TextGuard searches billions of web pages. Paste the article text there for 100% accurate results.')
 
     with pc2:
         ap      = ai["ai_pct"]
