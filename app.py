@@ -184,17 +184,65 @@ def extract_docx(raw):
             links.append(rel._target)
 
     # Extract comments directly from the zip — works reliably across all Word versions
+    # Only keep the FIRST comment per thread (the editor's comment, not writer replies)
     comments = []
     try:
         WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         with zipfile.ZipFile(BytesIO(raw)) as z:
             if "word/comments.xml" in z.namelist():
                 root = _etree.fromstring(z.read("word/comments.xml"))
-                for c in root.findall(f".//{{{WNS}}}comment"):
-                    author = c.get(f"{{{WNS}}}author", "Editor")
+                all_c = root.findall(f".//{{{WNS}}}comment")
+
+                # Separate parent comments from replies
+                # Replies have w:paraIdParent attribute or are in w:commentExtended
+                # Simpler: the first author to comment on a thread is the editor
+                # Collect all comment IDs that are replies
+                reply_ids = set()
+                # Check commentsExtended if available
+                if "word/commentsExtended.xml" in z.namelist():
+                    ext_root = _etree.fromstring(z.read("word/commentsExtended.xml"))
+                    W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+                    for ext in ext_root.findall(f".//{{{W15}}}commentEx"):
+                        parent_id = ext.get(f"{{{W15}}}paraIdParent")
+                        if parent_id:
+                            # This comment is a reply — get its ID
+                            cid = ext.get(f"{{{W15}}}paraId")
+                            reply_ids.add(cid)
+
+                # Build para_id -> comment_id map from document body
+                body_xml = z.read("word/document.xml")
+                body_root = _etree.fromstring(body_xml)
+                # Map paraId to comment IDs from commentsExtended
+                para_to_cid = {}
+                if "word/commentsExtended.xml" in z.namelist():
+                    ext_root2 = _etree.fromstring(z.read("word/commentsExtended.xml"))
+                    W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+                    for ext in ext_root2.findall(f".//{{{W15}}}commentEx"):
+                        para_id  = ext.get(f"{{{W15}}}paraId","")
+                        par_par  = ext.get(f"{{{W15}}}paraIdParent","")
+                        cid      = ext.get(f"{{{W15}}}id","")
+                        if par_par:
+                            reply_ids.add(para_id)
+
+                # Get all comment IDs that are replies by checking paraIdParent
+                reply_comment_ids = set()
+                if "word/commentsExtended.xml" in z.namelist():
+                    ext_root3 = _etree.fromstring(z.read("word/commentsExtended.xml"))
+                    W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+                    for ext in ext_root3.findall(f".//{{{W15}}}commentEx"):
+                        has_parent = ext.get(f"{{{W15}}}paraIdParent")
+                        if has_parent:
+                            cid = ext.get(f"{{{W15}}}id","")
+                            if cid: reply_comment_ids.add(cid)
+
+                # Add comments — skip replies
+                for c in all_c:
+                    cid    = c.get(f"{{{WNS}}}id","")
+                    author = c.get(f"{{{WNS}}}author","Editor")
                     body   = " ".join(c.itertext()).strip()
-                    if body:
-                        comments.append({"author": author, "text": body})
+                    if body and cid not in reply_comment_ids:
+                        comments.append({"author":author,"text":body})
+
     except Exception:
         pass
 
@@ -527,6 +575,8 @@ def page_submit():
             f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
             f'background:{"#c62828" if not bay else "#fdecea"};color:{"#fff" if not bay else "#c62828"}">Dubizzle</span>'
             f'</div>',unsafe_allow_html=True)
+        editor_name = st.text_input("Editor name (only this person's comments will count)",
+                    placeholder="e.g. Faten Aish — leave empty to count all comments")
         upload = st.file_uploader("Upload article file",type=["docx","pdf","txt"],
                     help=".docx recommended — headings, links and editor comments are extracted automatically")
         go = st.form_submit_button("Run full evaluation",use_container_width=True,type="primary")
@@ -545,7 +595,17 @@ def page_submit():
         st.error(f"Could not read text from file. {parsed.get('error','')}")
         return
 
-    with st.expander(f"Extracted — {len(parsed['headings'])} headings, {len(parsed['links'])} links, {len(parsed['comments'])} comments"):
+    # Filter comments to editor only if name provided
+    if editor_name.strip():
+        all_comments   = parsed["comments"]
+        editor_comments = [c for c in all_comments
+                           if editor_name.strip().lower() in c["author"].lower()]
+        parsed["comments"]     = editor_comments
+        parsed["all_comments"] = all_comments
+    else:
+        parsed["all_comments"] = parsed["comments"]
+
+    with st.expander(f"Extracted — {len(parsed['headings'])} headings, {len(parsed['links'])} links, {len(parsed['comments'])} editor comments"):
         col_h,col_l,col_c = st.columns(3)
         with col_h:
             st.markdown("**Headings**")
