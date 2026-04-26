@@ -1,6 +1,9 @@
 import streamlit as st
 import json
 import re
+import math
+import urllib.request
+import urllib.error
 from datetime import datetime
 from io import BytesIO
 
@@ -29,12 +32,8 @@ try:
 except ImportError:
     SHEETS_OK = False
 
-st.set_page_config(
-    page_title="Content QA System",
-    page_icon="Q",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",
+                   initial_sidebar_state="expanded")
 
 PLATFORMS     = ["Bayut", "Dubizzle"]
 CONTENT_TYPES = ["Landing page", "Blog post", "Property guide"]
@@ -50,170 +49,123 @@ CAT_MAX = {
 }
 
 GRADE_MAP = [
-    (90, "A  Excellent",      "green"),
-    (80, "B  Good",           "green"),
-    (70, "C  Needs revision", "orange"),
-    (60, "D  Major revision", "orange"),
-    (0,  "F  Reject",         "red"),
+    (90, "A — Excellent"),
+    (80, "B — Good"),
+    (70, "C — Needs revision"),
+    (60, "D — Major revision"),
+    (0,  "F — Reject"),
 ]
 
-# AI phrases used for detection highlighting
 AI_PHRASES = [
     "in conclusion", "it is worth noting", "it is important to note",
     "delve into", "in the realm of", "furthermore", "moreover",
     "needless to say", "leverage", "utilize", "seamlessly",
     "it goes without saying", "in today's", "one such", "robust",
     "cutting-edge", "state-of-the-art", "at the end of the day",
+    "effortlessly blends", "embody contemporary elegance",
+    "functional vitality", "architectural lines", "expansive glazing",
+]
+
+BROCHURE_PHRASES = [
+    "wellness-oriented", "highly anticipated", "masterplan",
+    "effortlessly blends", "distinguished residential", "dynamic enclave",
+    "lush landscaped buffers", "signature communal", "elevated everyday living",
+    "embody contemporary elegance", "functional vitality", "architectural lines",
+    "expansive glazing", "highly customisable aesthetic",
+    "light and dark material finishes", "open-plan configurations",
+    "smart-home integrations", "forward-looking environmental",
+    "eco-living standards", "dark sky-compliant",
+    "energy-efficient building methods", "smart irrigation",
+    "pedestrian-friendly trails", "responsible, sustainable and healthy",
+    "certainly. here are", "amenities mentioned in the brochure",
+    "define the next chapter", "dynamic urban living",
+    "tranquillity of expansive greenery", "wellness-oriented enclave",
+    "eco-friendly spaces", "self-sustaining", "immersive community experience",
+    "active design principles", "modern sanctuary", "lush landscape of parks",
+    "culture, leisure and active", "fabric of daily life",
+    "peaceful seclusion", "dynamic pulse", "world-class community amenities",
+    "premium off-plan homes", "strategically located", "seamless connectivity",
+    "metropolitan accessibility", "opulent master suite",
+    "contemporary elegance", "smart-home integration",
+    "lush landscape", "boasts", "unparalleled", "premium lifestyle",
+    "setting the benchmark",
 ]
 
 KNOWN_DOMAINS = [
     "emaar.com", "nakheel.com", "damac.com", "aldar.com", "meraas.com",
-    "sobha.com", "omniyat.com", "ellington.ae", "azizi.ae", "reportage.ae",
+    "sobha.com", "omniyat.com", "ellington.ae", "azizi.ae",
 ]
 
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
-    st.markdown("""
-    <style>
-    :root { --qa:#2D4A8A; --qa-light:#EEF2FB; }
-
-    .qa-header {
-        background:#1C2B5E; color:#fff;
-        padding:16px 20px; border-radius:10px; margin-bottom:1.2rem;
-    }
-    .qa-header h1 { font-size:18px; font-weight:500; margin:0; }
-
-    .score-hero {
-        background:var(--qa-light); border:1px solid var(--qa);
-        border-radius:10px; padding:16px 20px; margin-bottom:1rem;
-    }
-    .score-num    { font-size:52px; font-weight:500; color:var(--qa); line-height:1; }
-    .score-den    { font-size:16px; font-weight:400; color:#888; }
-    .score-grade  { font-size:13px; font-weight:500; margin-top:4px; color:var(--qa); }
-    .score-verdict { font-size:12px; color:#444; line-height:1.65; margin-top:8px; }
-
-    .breakdown-box {
-        background:#fff; border:0.5px solid #e0e0e0;
-        border-radius:8px; padding:12px 14px; margin-top:10px; font-size:12px;
-    }
-    .ded-row   { display:flex; justify-content:space-between; padding:4px 0;
-                 color:#991b1b; border-bottom:0.5px solid #fce; }
-    .base-row  { display:flex; justify-content:space-between; padding:4px 0;
-                 color:#555; border-bottom:0.5px solid #eee; }
-    .ok-row    { display:flex; justify-content:space-between; padding:4px 0;
-                 color:#888; border-bottom:0.5px solid #eee; font-size:11px; }
-    .total-row { display:flex; justify-content:space-between; padding:6px 0 2px;
-                 font-weight:600; font-size:13px; color:#1a1d2e;
-                 border-top:1.5px solid #ccc; margin-top:2px; }
-
-    .detect-card {
-        border:0.5px solid #e0e0e0; border-radius:10px;
-        padding:14px 16px; background:#fff; height:100%;
-    }
-    .detect-title   { font-size:12px; font-weight:600; color:#1a1d2e; margin-bottom:6px; }
-    .detect-pct     { font-size:32px; font-weight:500; line-height:1; margin-bottom:4px; }
-    .detect-bar     { height:6px; background:#eee; border-radius:3px; margin-bottom:8px; }
-    .detect-bar-f   { height:100%; border-radius:3px; }
-    .detect-thresh  { font-size:11px; font-weight:500; padding:4px 10px;
-                      border-radius:6px; display:inline-block; margin-bottom:8px; }
-    .detect-note    { font-size:11px; color:#666; line-height:1.6; }
-    .detect-split   { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
-    .detect-seg     { text-align:center; background:#f5f6fa; border-radius:6px; padding:6px; }
-    .detect-seg-n   { font-size:14px; font-weight:500; }
-    .detect-seg-l   { font-size:10px; color:#888; margin-top:2px; }
-
-    .issue-block {
-        background:#fffbf0; border:0.5px solid #f0d080;
-        border-radius:6px; padding:8px 10px; margin-top:8px; font-size:11px;
-    }
-    .issue-block-title { font-size:10px; font-weight:600; color:#92400e;
-                         text-transform:uppercase; letter-spacing:0.05em; margin-bottom:5px; }
-    .issue-snippet {
-        background:#fff; border-left:3px solid #d97706;
-        padding:5px 8px; margin-bottom:4px; border-radius:0 4px 4px 0;
-        font-size:11px; color:#444; line-height:1.5; font-style:italic;
-    }
-    .issue-snippet:last-child { margin-bottom:0; }
-    .ai-highlight { background:#fef3c7; border-radius:3px; padding:0 2px;
-                    font-weight:500; color:#92400e; }
-
-    .cmt-card {
-        background:#fff8f0; border-left:3px solid #2D4A8A;
-        padding:8px 12px; margin-bottom:6px;
-        border-radius:0 6px 6px 0; font-size:12px;
-    }
-    .cmt-author { font-weight:600; color:#2D4A8A; }
-    .cmt-deduct { font-size:10px; color:#991b1b; font-weight:500; margin-top:3px; }
-    .cat-ref    { font-size:10px; font-weight:500; padding:1px 7px; border-radius:20px;
-                  background:#EEF2FB; color:#2D4A8A; margin-left:6px; }
-
-    .suggest-item {
-        display:flex; gap:10px; align-items:flex-start;
-        padding:8px 0; border-bottom:0.5px solid #eee; font-size:12px;
-    }
-    .suggest-item:last-child { border:none; padding-bottom:0; }
-    .suggest-num {
-        width:22px; height:22px; border-radius:50%;
-        background:#EEF2FB; color:#2D4A8A;
-        font-size:10px; font-weight:600;
-        display:flex; align-items:center; justify-content:center;
-        flex-shrink:0; margin-top:1px;
-    }
-    .suggest-cat { font-size:10px; color:#888; margin-top:3px; }
-
-    .tag-str { background:#d1fae5; color:#065f46; padding:3px 10px;
-               border-radius:20px; font-size:11px; font-weight:500;
-               display:inline-block; margin:2px; }
-    .tag-imp { background:#fef3c7; color:#92400e; padding:3px 10px;
-               border-radius:20px; font-size:11px; font-weight:500;
-               display:inline-block; margin:2px; }
-
-    .bdg     { font-size:10px; font-weight:500; padding:2px 9px; border-radius:20px; }
-    .bdg-bay { background:#e8f5e9; color:#1b5e20; }
-    .bdg-dub { background:#fdecea; color:#b71c1c; }
-
-    .plat-btn {
-        display:inline-block; padding:7px 20px; border-radius:8px;
-        font-size:13px; font-weight:500; cursor:pointer;
-        border:2px solid transparent; margin-right:8px;
-        transition:all 0.15s;
-    }
-    .no-comments-notice {
-        background:#f5f6fa; border:0.5px solid #e0e0e0;
-        border-radius:6px; padding:10px 14px; font-size:12px;
-        color:#666; margin-bottom:8px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown("""<style>
+    :root{--qa:#2D4A8A;--qa-light:#EEF2FB}
+    .qa-header{background:#1C2B5E;color:#fff;padding:16px 20px;border-radius:10px;margin-bottom:1.2rem}
+    .qa-header h1{font-size:18px;font-weight:500;margin:0}
+    .score-hero{background:var(--qa-light);border:1px solid var(--qa);border-radius:10px;padding:16px 20px;margin-bottom:1rem}
+    .score-num{font-size:52px;font-weight:500;color:var(--qa);line-height:1}
+    .score-den{font-size:16px;font-weight:400;color:#888}
+    .score-grade{font-size:13px;font-weight:500;margin-top:4px;color:var(--qa)}
+    .score-verdict{font-size:12px;color:#444;line-height:1.65;margin-top:8px}
+    .breakdown-box{background:#fff;border:0.5px solid #e0e0e0;border-radius:8px;padding:12px 14px;margin-top:10px;font-size:12px}
+    .ded-row{display:flex;justify-content:space-between;padding:4px 0;color:#991b1b;border-bottom:0.5px solid #fce}
+    .base-row{display:flex;justify-content:space-between;padding:4px 0;color:#555;border-bottom:0.5px solid #eee}
+    .ok-row{display:flex;justify-content:space-between;padding:4px 0;color:#888;border-bottom:0.5px solid #eee;font-size:11px}
+    .total-row{display:flex;justify-content:space-between;padding:6px 0 2px;font-weight:600;font-size:13px;color:#1a1d2e;border-top:1.5px solid #ccc;margin-top:2px}
+    .detect-card{border:0.5px solid #e0e0e0;border-radius:10px;padding:14px 16px;background:#fff}
+    .detect-title{font-size:12px;font-weight:600;color:#1a1d2e;margin-bottom:6px}
+    .detect-bar{height:6px;background:#eee;border-radius:3px;margin-bottom:8px}
+    .detect-bar-f{height:100%;border-radius:3px}
+    .detect-thresh{font-size:11px;font-weight:500;padding:4px 10px;border-radius:6px;display:inline-block;margin-bottom:8px}
+    .detect-note{font-size:11px;color:#666;line-height:1.6}
+    .detect-split{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+    .detect-seg{text-align:center;background:#f5f6fa;border-radius:6px;padding:6px}
+    .detect-seg-n{font-size:14px;font-weight:500}
+    .detect-seg-l{font-size:10px;color:#888;margin-top:2px}
+    .issue-block{background:#fffbf0;border:0.5px solid #f0d080;border-radius:6px;padding:8px 10px;margin-top:8px}
+    .issue-block-title{font-size:10px;font-weight:600;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px}
+    .issue-snippet{background:#fff;border-left:3px solid #d97706;padding:5px 8px;margin-bottom:4px;border-radius:0 4px 4px 0;font-size:11px;color:#444;line-height:1.5;font-style:italic}
+    .issue-snippet:last-child{margin-bottom:0}
+    .cmt-card{background:#fff8f0;border-left:3px solid #2D4A8A;padding:8px 12px;margin-bottom:6px;border-radius:0 6px 6px 0;font-size:12px}
+    .cmt-author{font-weight:600;color:#2D4A8A}
+    .cmt-deduct{font-size:10px;color:#991b1b;font-weight:500;margin-top:3px}
+    .cat-ref{font-size:10px;font-weight:500;padding:1px 7px;border-radius:20px;background:#EEF2FB;color:#2D4A8A;margin-left:6px}
+    .suggest-item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:0.5px solid #eee;font-size:12px}
+    .suggest-item:last-child{border:none;padding-bottom:0}
+    .suggest-num{width:22px;height:22px;border-radius:50%;background:#EEF2FB;color:#2D4A8A;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+    .suggest-cat{font-size:10px;color:#888;margin-top:3px}
+    .tag-str{background:#d1fae5;color:#065f46;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;display:inline-block;margin:2px}
+    .tag-imp{background:#fef3c7;color:#92400e;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;display:inline-block;margin:2px}
+    .bdg{font-size:10px;font-weight:500;padding:2px 9px;border-radius:20px}
+    .bdg-bay{background:#e8f5e9;color:#1b5e20}
+    .bdg-dub{background:#fdecea;color:#b71c1c}
+    .no-cmt-notice{background:#f5f6fa;border:0.5px solid #e0e0e0;border-radius:6px;padding:10px 14px;font-size:12px;color:#666;margin-bottom:8px}
+    </style>""", unsafe_allow_html=True)
 
 
-# ── Groq AI call ───────────────────────────────────────────────────────────
-def call_ai(prompt: str) -> str:
+# ── Groq AI ────────────────────────────────────────────────────────────────
+def call_ai(prompt):
     if not GROQ_OK:
-        raise Exception("groq package not installed — check requirements.txt")
+        raise Exception("groq not installed — check requirements.txt")
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-    for model in ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it", "mixtral-8x7b-32768"]:
+    for model in ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]:
         try:
             resp = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=2000,
-            )
+                messages=[{"role":"user","content":prompt}],
+                temperature=0.3, max_tokens=2000)
             return resp.choices[0].message.content.strip()
         except Exception as e:
-            err = str(e).lower()
-            if "model" in err or "not found" in err or "decommission" in err:
+            if any(x in str(e).lower() for x in ["model","not found","decommission"]):
                 continue
             raise e
-    raise Exception("All Groq models failed. Check your GROQ_API_KEY in Streamlit Secrets.")
+    raise Exception("All Groq models failed. Check GROQ_API_KEY in Secrets.")
 
 
 # ── file parsers ───────────────────────────────────────────────────────────
 def extract_docx(raw):
     if not DOCX_OK:
-        return {"text": "", "headings": [], "links": [], "comments": [],
-                "word_count": 0, "error": "python-docx not installed"}
+        return {"text":"","headings":[],"links":[],"comments":[],"word_count":0,"error":"python-docx not installed"}
     doc = Document(BytesIO(raw))
     text, headings, links = [], [], []
     for p in doc.paragraphs:
@@ -221,34 +173,29 @@ def extract_docx(raw):
         if not t: continue
         text.append(t)
         s = p.style.name
-        if   s.startswith("Heading 1"): headings.append({"level": "H1", "text": t})
-        elif s.startswith("Heading 2"): headings.append({"level": "H2", "text": t})
-        elif s.startswith("Heading 3"): headings.append({"level": "H3", "text": t})
+        if   s.startswith("Heading 1"): headings.append({"level":"H1","text":t})
+        elif s.startswith("Heading 2"): headings.append({"level":"H2","text":t})
+        elif s.startswith("Heading 3"): headings.append({"level":"H3","text":t})
     for rel in doc.part.rels.values():
         if "hyperlink" in rel.reltype:
             links.append(rel._target)
     comments = []
     try:
         cp = doc.part.package.part_related_by(
-            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
-        )
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments")
         for c in cp._element.findall(
-            ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}comment"
-        ):
-            author = c.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author", "Editor")
+            ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}comment"):
+            author = c.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author","Editor")
             body   = " ".join(x.text for x in c.iter() if x.text).strip()
-            if body:
-                comments.append({"author": author, "text": body})
+            if body: comments.append({"author":author,"text":body})
     except Exception:
         pass
     full = "\n".join(text)
-    return {"text": full, "headings": headings, "links": links,
-            "comments": comments, "word_count": len(full.split()), "error": ""}
+    return {"text":full,"headings":headings,"links":links,"comments":comments,"word_count":len(full.split()),"error":""}
 
 def extract_pdf(raw):
     if not PDF_OK:
-        return {"text": "", "headings": [], "links": [], "comments": [],
-                "word_count": 0, "error": "pdfplumber not installed"}
+        return {"text":"","headings":[],"links":[],"comments":[],"word_count":0,"error":"pdfplumber not installed"}
     parts, links = [], []
     with pdfplumber.open(BytesIO(raw)) as pdf:
         for page in pdf.pages:
@@ -258,13 +205,11 @@ def extract_pdf(raw):
                 u = a.get("uri")
                 if u: links.append(u)
     full = "\n".join(parts)
-    return {"text": full, "headings": [], "links": links,
-            "comments": [], "word_count": len(full.split()), "error": ""}
+    return {"text":full,"headings":[],"links":links,"comments":[],"word_count":len(full.split()),"error":""}
 
 def extract_txt(raw):
     full = raw.decode("utf-8", errors="ignore")
-    return {"text": full, "headings": [], "links": re.findall(r'https?://\S+', full),
-            "comments": [], "word_count": len(full.split()), "error": ""}
+    return {"text":full,"headings":[],"links":re.findall(r'https?://\S+',full),"comments":[],"word_count":len(full.split()),"error":""}
 
 def parse_file(f):
     raw  = f.getvalue()
@@ -274,195 +219,258 @@ def parse_file(f):
     else:                        return extract_txt(raw)
 
 
-# ── content issue extraction ───────────────────────────────────────────────
-def find_ai_snippets(text):
-    """Return sentences that contain AI phrases."""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    flagged = []
-    for sent in sentences:
-        low = sent.lower()
-        for phrase in AI_PHRASES:
-            if phrase in low:
-                snippet = sent.strip()
-                if len(snippet) > 20 and snippet not in flagged:
-                    flagged.append(snippet[:200])
-                break
-    return flagged[:5]  # return up to 5 snippets
+# ── scoring ────────────────────────────────────────────────────────────────
+def apply_deductions(base_score, comments, plag_pct, ai_pct):
+    c = len(comments)
+    p = 5 if plag_pct > 20 else 0
+    a = 5 if ai_pct   > 20 else 0
+    final = max(0, base_score - c - p - a)
+    return final, {"base_score":base_score,"comment_count":len(comments),
+                   "comment_deduction":c,"plag_pct":plag_pct,"plag_deduction":p,
+                   "ai_pct":ai_pct,"ai_deduction":a,"final_score":final}
 
-def find_plag_snippets(text, links):
+def get_recommendation(score):
+    return "approve" if score >= 80 else "reject" if score < 60 else "revise"
+
+def get_grade(score):
+    for t, label in GRADE_MAP:
+        if score >= t: return label
+    return GRADE_MAP[-1][1]
+
+
+# ── QA — comment-driven only ───────────────────────────────────────────────
+def run_qa(title, content, writer, ctype, lang, platform, headings, links, comments):
+    h_txt = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None"
+    l_txt = "\n".join(f"  - {l}" for l in links[:8])                      or "  None"
+
+    if not comments:
+        scores = {cat:{"score":mx,"feedback":"No editor comments. Full marks awarded.","comment_refs":[]}
+                  for cat,mx in CAT_MAX.items()}
+        return {"scores":scores,"total":sum(CAT_MAX.values()),
+                "overall_feedback":"No editor comments found. All categories awarded full marks.",
+                "key_strengths":[],"areas_for_improvement":[],"suggestions":[]}
+
+    c_txt = "\n".join(f"  Comment {i+1} [{c['author']}]: {c['text']}" for i,c in enumerate(comments))
+
+    prompt = f"""You are a senior content QA evaluator for {platform}, a leading UAE real estate platform.
+Evaluate this {ctype.lower()} written in {lang}.
+
+TITLE: {title}
+WRITER: {writer}
+
+HEADINGS: {h_txt}
+LINKS: {l_txt}
+EDITOR COMMENTS: {c_txt}
+
+ARTICLE (context only): {content[:3000]}
+
+RULES:
+1. Score ONLY based on editor comments. Do NOT evaluate content independently.
+2. Map each comment to the most relevant category and reduce that score.
+3. Categories with NO related comments get their MAXIMUM score.
+4. Every comment must appear in at least one category's feedback.
+5. comment_refs must list the comment numbers that affected each category.
+6. Suggestions must directly address the comments.
+
+Return ONLY valid JSON:
+{{
+  "scores": {{
+    "Content Quality":    {{"score":<0-25>,"feedback":"<what comments flagged>","comment_refs":[]}},
+    "SEO & Structure":    {{"score":<0-20>,"feedback":"<what comments flagged>","comment_refs":[]}},
+    "Language & Grammar": {{"score":<0-20>,"feedback":"<what comments flagged>","comment_refs":[]}},
+    "Brand Voice":        {{"score":<0-15>,"feedback":"<what comments flagged>","comment_refs":[]}},
+    "Readability & Flow": {{"score":<0-10>,"feedback":"<what comments flagged>","comment_refs":[]}},
+    "Originality":        {{"score":<0-10>,"feedback":"<what comments flagged>","comment_refs":[]}}
+  }},
+  "total":<sum>,
+  "overall_feedback":"<3 sentence summary referencing specific comments>",
+  "key_strengths":[],
+  "areas_for_improvement":["<from comment 1>","<from comment 2>"],
+  "suggestions":[
+    {{"number":1,"action":"<specific fix from a comment>","category":"<category>"}},
+    {{"number":2,"action":"<specific fix from a comment>","category":"<category>"}},
+    {{"number":3,"action":"<specific fix from a comment>","category":"<category>"}}
+  ]
+}}"""
+
+    raw   = call_ai(prompt)
+    clean = re.sub(r"```json|```","",raw).strip()
+    m     = re.search(r'\{.*\}', clean, re.DOTALL)
+    if m: clean = m.group(0)
+    return json.loads(clean)
+
+
+# ── plagiarism ─────────────────────────────────────────────────────────────
+def check_plagiarism(text, links):
     """
-    Use AI to identify sentences copied from developer brochures/websites,
-    then highlight the brochure phrases within each flagged sentence.
-    Falls back to heuristic if AI call fails.
+    Groq-powered plagiarism detection — free and unlimited.
+    Asks Llama 3 to read the article and identify sentences
+    that appear copied from developer brochures or websites,
+    then returns a percentage and the flagged sentences.
     """
     flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
 
-    # Large list of phrases that appear in developer brochures but not original editorial
-    brochure_phrases = [
-        "inspired by", "lush green", "rich history", "sense of belonging",
-        "world-class", "premium lifestyle", "master plan", "masterplan",
-        "seamlessly integrat", "state-of-the-art", "self-sustaining",
-        "eco-friendly", "all-encompassing", "strategically located",
-        "boasts", "showcases", "meticulous attention", "bespoke",
-        "setting the benchmark", "unparalleled", "premier destination",
-        "luxury finishes", "highly anticipated", "freehold destination",
-        "gated environment", "off-plan", "wellness-oriented",
-        "dynamic enclave", "lush landscaped", "signature amenities",
-        "contemporary elegance", "functional vitality", "architectural lines",
-        "expansive glazing", "customisable aesthetic", "smart-home integration",
-        "dark sky-compliant", "energy-efficient building", "smart irrigation",
-        "waste management system", "define the next chapter", "dynamic urban living",
-        "tranquillity of expansive", "active design principles",
-        "modern sanctuary", "lush landscape of parks", "fabric of daily life",
-        "peaceful seclusion", "dynamic pulse", "elevated everyday living",
-        "opulent master suite", "certainly. here are", "mentioned in the brochure",
-        "effortlessly blends", "health-focused environment", "metropolitan accessibility",
-        "distinguished residential", "wellness amenities", "embody contemporary",
-        "invite abundant natural light", "light and dark material finishes",
-        "open-plan configurations", "forward-looking environmental",
-        "eco-living standards", "light pollution", "pedestrian-friendly",
-        "responsible, sustainable", "tranquillity of expansive greenery",
-        "immersive community experience", "culture, leisure and active",
-    ]
+    prompt = f"""You are a plagiarism detection expert for UAE real estate content.
 
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    flagged = []
-    seen = set()
+Read the article below and identify sentences that appear to be copied or closely lifted from:
+- Developer brochures (Emaar, Aldar, Damac, Nakheel, Meraas, Sobha etc.)
+- Developer websites
+- Property listing descriptions
+- AI-generated filler text (e.g. "Certainly. Here are the amenities...")
 
+For each copied sentence, include the exact sentence from the article.
+
+Return ONLY valid JSON:
+{{
+  "plagiarism_percentage": <0-100 integer, estimate what % of the article is copied>,
+  "flagged_sentences": [
+    "<exact copied sentence from article>",
+    "<exact copied sentence from article>"
+  ],
+  "assessment": "<1 sentence summary of the plagiarism situation>"
+}}
+
+Rules:
+- Only flag sentences that are clearly copied developer/brochure language
+- Do NOT flag factual data (prices, sq ft, dates, distances) — those are always original
+- Do NOT flag simple descriptive sentences that any writer might write
+- Flag sentences with marketing phrases like "embody contemporary elegance", "seamlessly integrates", "wellness-oriented", "dynamic enclave", "fabric of daily life", "certainly. here are" etc.
+- Return between 0 and 15 flagged sentences maximum
+
+ARTICLE:
+{text[:5000]}"""
+
+    try:
+        raw   = call_ai(prompt)
+        clean = re.sub(r"```json|```", "", raw).strip()
+        m     = re.search(r'\{{.*\}}', clean, re.DOTALL)
+        if m: clean = m.group(0)
+        result = json.loads(clean)
+
+        pct       = min(int(result.get("plagiarism_percentage", 0)), 100)
+        sentences = result.get("flagged_sentences", [])[:15]
+
+        return {{
+            "percentage":       pct,
+            "flagged_sources":  flagged_sources,
+            "flagged_sentences":sentences,
+            "hits":             len(sentences),
+            "source":           "Groq",
+            "assessment":       result.get("assessment",""),
+            "status":           "danger" if pct>20 else "warn" if pct>10 else "safe",
+        }}
+    except Exception:
+        # Heuristic fallback if Groq call fails
+        text_lower = text.lower()
+        hits  = sum(1 for p in BROCHURE_PHRASES if p in text_lower)
+        total = len(BROCHURE_PHRASES)
+        base  = min(int((math.sqrt(hits)/math.sqrt(max(total,1)))*60), 60)
+        bonus = min(len(flagged_sources)*4, 15)
+        pct   = min(base+bonus, 100)
+        return {{"percentage":pct,"flagged_sources":flagged_sources,
+                "flagged_sentences":[],"hits":hits,"source":"heuristic",
+                "status":"danger" if pct>20 else "warn" if pct>10 else "safe"}}
+
+def get_plag_snippets(text, links, plag_result=None):
+    """Return (sources, flagged_sentences). Uses Groq result if available."""
+    if plag_result and plag_result.get("flagged_sentences"):
+        return plag_result.get("flagged_sources",[]), plag_result.get("flagged_sentences",[])
+    # Heuristic fallback
+    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    flagged, seen = [], set()
     for sent in sentences:
         stripped = sent.strip()
         low = stripped.lower()
-        if len(low) < 35 or stripped in seen:
-            continue
-        for phrase in brochure_phrases:
+        if len(low) < 35 or stripped in seen: continue
+        for phrase in BROCHURE_PHRASES:
             if phrase in low:
                 seen.add(stripped)
                 flagged.append(stripped[:280])
                 break
-
-    # Return up to 8 flagged sentences
     return flagged_sources, flagged[:8]
 
-
-def highlight_plag_sentence(sentence):
-    """Wrap brochure phrases with red highlight using lambda to avoid backreference issues."""
-    phrases = [
-        "world-class", "highly anticipated", "off-plan", "master plan", "masterplan",
-        "seamlessly integrat", "self-sustaining", "eco-friendly", "strategically located",
-        "boasts", "setting the benchmark", "unparalleled", "luxury finishes",
-        "wellness-oriented", "dynamic enclave", "lush landscaped", "signature amenities",
-        "contemporary elegance", "functional vitality", "architectural lines",
-        "expansive glazing", "customisable aesthetic", "smart-home integration",
-        "dark sky-compliant", "energy-efficient", "smart irrigation",
-        "define the next chapter", "dynamic urban living", "active design principles",
-        "modern sanctuary", "lush landscape", "fabric of daily life",
-        "peaceful seclusion", "dynamic pulse", "elevated everyday living",
-        "opulent master suite", "certainly. here are", "mentioned in the brochure",
-        "effortlessly blends", "metropolitan accessibility", "distinguished residential",
-        "embody contemporary", "light and dark material finishes", "eco-living",
-        "pedestrian-friendly", "responsible, sustainable", "tranquillity",
-        "immersive community", "culture, leisure", "premium lifestyle",
-        "wellness amenities", "forward-looking environmental", "open-plan configuration",
-        "state-of-the-art", "premium residential", "wellness-oriented enclave",
-        "lush landscaped buffers", "smart-home integrations",
-    ]
+def highlight_plag(sentence):
     result = sentence
-    for phrase in phrases:
+    for phrase in BROCHURE_PHRASES:
         pat = re.compile(re.escape(phrase), re.IGNORECASE)
-        def make_mark(m):
-            return ('<mark style="background:#fecaca;border-radius:3px;'
-                    'padding:0 3px;font-weight:500;color:#7f1d1d">'
-                    + m.group(0) + "</mark>")
-        result = pat.sub(make_mark, result)
+        def mark(m): return ('<mark style="background:#fecaca;border-radius:3px;padding:0 2px;font-weight:500;color:#7f1d1d">'+m.group(0)+'</mark>')
+        result = pat.sub(mark, result)
     return result
 
-def check_plagiarism(text, links):
-    """Score plagiarism based on brochure phrase density — works without source links."""
-    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
 
-    brochure_score_phrases = [
-        "world-class", "highly anticipated", "off-plan", "masterplan",
-        "seamlessly integrat", "self-sustaining", "eco-friendly",
-        "strategically located", "boasts", "setting the benchmark",
-        "unparalleled", "luxury finishes", "wellness-oriented",
-        "dynamic enclave", "lush landscaped", "signature amenities",
-        "contemporary elegance", "functional vitality", "architectural lines",
-        "expansive glazing", "customisable aesthetic", "smart-home integration",
-        "dark sky-compliant", "energy-efficient building", "smart irrigation",
-        "define the next chapter", "dynamic urban living",
-        "active design principles", "modern sanctuary", "lush landscape of parks",
-        "fabric of daily life", "peaceful seclusion", "dynamic pulse",
-        "elevated everyday living", "opulent master suite",
-        "certainly. here are", "mentioned in the brochure",
-        "effortlessly blends", "distinguished residential",
-        "embody contemporary", "light and dark material finishes",
-        "eco-living standards", "pedestrian-friendly trails",
-        "responsible, sustainable and healthy", "immersive community experience",
-        "culture, leisure and active", "premium off-plan homes",
-        "forward-looking environmental", "premium residential cluster",
-        "wellness-oriented enclave", "lush landscaped buffers",
-        "open-plan configurations", "smart-home integrations",
-        "embody contemporary elegance and functional vitality",
-    ]
-
-    text_lower = text.lower()
-    hits = sum(1 for p in brochure_score_phrases if p in text_lower)
-    total_phrases = len(brochure_score_phrases)
-
-    # Scale: 0 hits=0%, 5 hits=15%, 10 hits=30%, 20 hits=55%, 30+=75%
-    # Uses square-root curve so early hits matter more
-    import math
-    base_pct   = min(int((math.sqrt(hits) / math.sqrt(total_phrases)) * 60), 60)
-    link_bonus = min(len(flagged_sources) * 4, 15)
-    pct        = min(base_pct + link_bonus, 100)
-
-    return {
-        "percentage":      pct,
-        "flagged_sources": flagged_sources,
-        "hits":            hits,
-        "status":          "danger" if pct > 20 else "warn" if pct > 10 else "safe",
-    }
-
+# ── AI detection ───────────────────────────────────────────────────────────
 def check_ai(text):
+    """Real AI detection via GPTZero API. Falls back to heuristic if no key."""
+    api_key = st.secrets.get("GPTZERO_API_KEY","")
+    if api_key and len(text.strip()) > 50:
+        try:
+            payload = json.dumps({"document":text[:10000],"version":"2025-01-09"}).encode("utf-8")
+            req     = urllib.request.Request(
+                "https://api.gptzero.me/v2/predict/text",
+                data=payload,
+                headers={"Content-Type":"application/json","Accept":"application/json","x-api-key":api_key},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            doc      = data.get("documents",[{}])[0]
+            ai_pct   = int(round(doc.get("completely_generated_prob",0)*100))
+            sents    = doc.get("sentences",[])
+            ai_sents = [s.get("sentence","") for s in sents
+                        if s.get("generated_prob",0)>0.5 and len(s.get("sentence",""))>30][:5]
+            return {"ai_pct":ai_pct,"human_pct":100-ai_pct,
+                    "status":"danger" if ai_pct>20 else "warn" if ai_pct>10 else "safe",
+                    "source":"GPTZero","ai_sentences":ai_sents}
+        except Exception:
+            pass
+
+    # Heuristic fallback
     hits = sum(1 for p in AI_PHRASES if p in text.lower())
-    pct  = min(hits * 5, 65)
-    return {
-        "ai_pct":    pct,
-        "human_pct": 100 - pct,
-        "status":    "danger" if pct > 20 else "warn" if pct > 10 else "safe",
-    }
+    pct  = min(hits*5, 60)
+    snippets = []
+    for sent in re.split(r'(?<=[.!?])\s+', text):
+        low = sent.strip().lower()
+        if len(low)<35: continue
+        if any(p in low for p in AI_PHRASES):
+            snippets.append(sent.strip()[:200])
+        if len(snippets)>=5: break
+    return {"ai_pct":pct,"human_pct":100-pct,
+            "status":"danger" if pct>20 else "warn" if pct>10 else "safe",
+            "source":"heuristic","ai_sentences":snippets}
+
+def highlight_ai(sentence):
+    result = sentence
+    for phrase in AI_PHRASES:
+        pat = re.compile(re.escape(phrase), re.IGNORECASE)
+        def mark(m): return ('<mark style="background:#fef3c7;border-radius:3px;padding:0 2px;font-weight:500;color:#78350f">'+m.group(0)+'</mark>')
+        result = pat.sub(mark, result)
+    return result
 
 
-# ── Google Sheets logger ───────────────────────────────────────────────────
+# ── Google Sheets ──────────────────────────────────────────────────────────
 def log_to_sheets(row):
-    if not SHEETS_OK:
-        return
+    if not SHEETS_OK: return
     try:
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
         gc    = gspread.authorize(creds)
-        sheet = gc.open(st.secrets.get("SHEET_NAME", "Bayut QA Submissions")).sheet1
+        sheet = gc.open(st.secrets.get("SHEET_NAME","Bayut QA Submissions")).sheet1
         if not sheet.row_values(1):
-            sheet.append_row([
-                "Date","Platform","Writer","Title","Type","Language",
-                "Base Score","Comments","Plagiarism Ded","AI Ded",
-                "Final Score","Plagiarism%","AI%","Recommendation",
-                "Editor Decision","Notes"
-            ])
-        d = row.get("deductions", {})
-        sheet.append_row([
-            row.get("date"), row.get("platform"), row.get("writer"),
-            row.get("title"), row.get("content_type"), row.get("language"),
-            d.get("base_score",0), d.get("comment_deduction",0),
-            d.get("plag_deduction",0), d.get("ai_deduction",0),
-            d.get("final_score",0), row.get("plagiarism_pct",0),
-            row.get("ai_pct",0), row.get("recommendation",""),
-            row.get("editor_decision",""), row.get("editor_notes",""),
-        ])
+            sheet.append_row(["Date","Platform","Writer","Title","Type","Language",
+                              "Base Score","Comments","Plagiarism Ded","AI Ded",
+                              "Final Score","Plagiarism%","AI%","Recommendation",
+                              "Editor Decision","Notes"])
+        d = row.get("deductions",{})
+        sheet.append_row([row.get("date"),row.get("platform"),row.get("writer"),
+                          row.get("title"),row.get("content_type"),row.get("language"),
+                          d.get("base_score",0),d.get("comment_deduction",0),
+                          d.get("plag_deduction",0),d.get("ai_deduction",0),
+                          d.get("final_score",0),row.get("plagiarism_pct",0),
+                          row.get("ai_pct",0),row.get("recommendation",""),
+                          row.get("editor_decision",""),row.get("editor_notes","")])
     except Exception as e:
-        st.warning(f"Could not log to Google Sheets: {e}")
+        st.warning(f"Google Sheets log failed: {e}")
 
 
 # ── sidebar ────────────────────────────────────────────────────────────────
@@ -471,8 +479,7 @@ def sidebar():
         st.markdown("## Content QA System")
         st.divider()
         st.markdown("### Navigation")
-        page = st.radio("Go to", ["Submit article", "Dashboard"],
-                        label_visibility="collapsed")
+        page = st.radio("Go to",["Submit article","Dashboard"],label_visibility="collapsed")
         st.divider()
         st.markdown("### Deduction rules")
         st.markdown("""
@@ -482,105 +489,43 @@ def sidebar():
 | Plagiarism over 20% | - 5 |
 | AI content over 20% | - 5 |
         """)
+        if st.secrets.get("GPTZERO_API_KEY",""):
+            st.success("GPTZero AI detection connected")
+        else:
+            st.info("Add GPTZERO_API_KEY to Secrets for real AI detection")
+
         return page
-
-
-# ── platform selector ──────────────────────────────────────────────────────
-def platform_selector():
-    """Coloured Bayut/Dubizzle buttons using session state."""
-    if "platform" not in st.session_state:
-        st.session_state.platform = "Bayut"
-
-    st.markdown("**Platform**")
-    col_b, col_d, col_rest = st.columns([1, 1, 4])
-
-    bay_style = (
-        "background:#2e7d32;color:#fff;border:2px solid #2e7d32;"
-        if st.session_state.platform == "Bayut"
-        else "background:#fff;color:#2e7d32;border:2px solid #2e7d32;"
-    )
-    dub_style = (
-        "background:#c62828;color:#fff;border:2px solid #c62828;"
-        if st.session_state.platform == "Dubizzle"
-        else "background:#fff;color:#c62828;border:2px solid #c62828;"
-    )
-
-    st.markdown(
-        f"""
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <div onclick="" style="padding:7px 20px;border-radius:8px;font-size:13px;
-               font-weight:500;cursor:pointer;{bay_style}">Bayut</div>
-          <div onclick="" style="padding:7px 20px;border-radius:8px;font-size:13px;
-               font-weight:500;cursor:pointer;{dub_style}">Dubizzle</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # actual functional buttons hidden behind radio
-    choice = st.radio(
-        "Platform select",
-        ["Bayut", "Dubizzle"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="platform",
-    )
-    return choice
 
 
 # ── submit page ────────────────────────────────────────────────────────────
 def page_submit():
     inject_css()
-    st.markdown(
-        '<div class="qa-header"><h1>Content QA System</h1></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="qa-header"><h1>Content QA System</h1></div>',unsafe_allow_html=True)
 
     with st.form("qa_form"):
-        c1, c2 = st.columns(2)
-        writer = c1.text_input("Writer name", placeholder="e.g. Sarah Ahmed")
-        title  = c2.text_input("Article title", placeholder="e.g. Everything About Montura 2")
-        c3, c4 = st.columns(2)
-        ctype  = c3.selectbox("Content type", CONTENT_TYPES)
-        lang   = c4.selectbox("Language", LANGUAGES)
-
+        c1,c2 = st.columns(2)
+        writer = c1.text_input("Writer name",placeholder="e.g. Sarah Ahmed")
+        title  = c2.text_input("Article title",placeholder="e.g. Everything About Montura 2")
+        c3,c4  = st.columns(2)
+        ctype  = c3.selectbox("Content type",CONTENT_TYPES)
+        lang   = c4.selectbox("Language",LANGUAGES)
         st.markdown("**Platform**")
-        platform = st.radio(
-            "Platform",
-            PLATFORMS,
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-
-        # Colour the selected platform label via markdown
-        bay_sel = platform == "Bayut"
-        dub_sel = platform == "Dubizzle"
+        platform = st.radio("Platform",PLATFORMS,horizontal=True,label_visibility="collapsed")
+        bay = platform=="Bayut"
         st.markdown(
             f'<div style="margin-top:-8px;margin-bottom:8px;display:flex;gap:8px">'
             f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
-            f'background:{"#2e7d32" if bay_sel else "#e8f5e9"};'
-            f'color:{"#fff" if bay_sel else "#2e7d32"}">Bayut</span>'
+            f'background:{"#2e7d32" if bay else "#e8f5e9"};color:{"#fff" if bay else "#2e7d32"}">Bayut</span>'
             f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
-            f'background:{"#c62828" if dub_sel else "#fdecea"};'
-            f'color:{"#fff" if dub_sel else "#c62828"}">Dubizzle</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        upload = st.file_uploader(
-            "Upload article file",
-            type=["docx", "pdf", "txt"],
-            help=".docx recommended — headings, links and editor comments are extracted automatically",
-        )
-        go = st.form_submit_button("Run full evaluation", use_container_width=True, type="primary")
+            f'background:{"#c62828" if not bay else "#fdecea"};color:{"#fff" if not bay else "#c62828"}">Dubizzle</span>'
+            f'</div>',unsafe_allow_html=True)
+        upload = st.file_uploader("Upload article file",type=["docx","pdf","txt"],
+                    help=".docx recommended — headings, links and editor comments are extracted automatically")
+        go = st.form_submit_button("Run full evaluation",use_container_width=True,type="primary")
 
     if not go:
-        st.info(
-            "Upload a .docx file. Category scores are based entirely on editor comments "
-            "found in the document. If no comments exist, full marks are awarded."
-        )
+        st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
         return
-
     if not writer or not title or not upload:
         st.error("Please fill in writer name, title and upload a file.")
         return
@@ -588,106 +533,72 @@ def page_submit():
     with st.spinner("Reading file..."):
         parsed = parse_file(upload)
 
-    if not parsed["text"] or len(parsed["text"]) < 30:
+    if not parsed["text"] or len(parsed["text"])<30:
         st.error(f"Could not read text from file. {parsed.get('error','')}")
         return
 
-    with st.expander(
-        f"Extracted from file — {len(parsed['headings'])} headings, "
-        f"{len(parsed['links'])} links, {len(parsed['comments'])} editor comments"
-    ):
-        col_h, col_l, col_c = st.columns(3)
+    with st.expander(f"Extracted — {len(parsed['headings'])} headings, {len(parsed['links'])} links, {len(parsed['comments'])} comments"):
+        col_h,col_l,col_c = st.columns(3)
         with col_h:
             st.markdown("**Headings**")
-            for h in parsed["headings"]:
-                st.markdown(f"`{h['level']}` {h['text']}")
-            if not parsed["headings"]:
-                st.caption("None detected")
+            for h in parsed["headings"]: st.markdown(f"`{h['level']}` {h['text']}")
+            if not parsed["headings"]: st.caption("None detected")
         with col_l:
             st.markdown("**Links**")
-            for l in parsed["links"][:6]:
-                st.markdown(f"- {l}")
-            if not parsed["links"]:
-                st.caption("None detected")
+            for l in parsed["links"][:6]: st.markdown(f"- {l}")
+            if not parsed["links"]: st.caption("None detected")
         with col_c:
             st.markdown("**Editor comments**")
-            for idx, c in enumerate(parsed["comments"], 1):
+            for idx,c in enumerate(parsed["comments"],1):
                 st.markdown(
-                    f'<div class="cmt-card">'
-                    f'<span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
-                    f'{c["text"]}'
-                    f'<div class="cmt-deduct">1 point deducted from final score</div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-            if not parsed["comments"]:
-                st.caption("No comments found in file")
+                    f'<div class="cmt-card"><span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
+                    f'{c["text"]}<div class="cmt-deduct">1 point deducted</div></div>',
+                    unsafe_allow_html=True)
+            if not parsed["comments"]: st.caption("No comments found")
 
-    prog = st.progress(0, text="Starting evaluation...")
+    prog = st.progress(0,text="Starting...")
 
     try:
-        prog.progress(20, text="Scoring categories from editor comments...")
-        qa = run_qa(
-            title, parsed["text"], writer, ctype, lang, platform,
-            parsed["headings"], parsed["links"], parsed["comments"],
-        )
+        prog.progress(15,text="Scoring categories from editor comments...")
+        qa = run_qa(title,parsed["text"],writer,ctype,lang,platform,
+                    parsed["headings"],parsed["links"],parsed["comments"])
     except Exception as e:
         st.error(f"AI evaluation failed: {e}")
-        st.info("Make sure GROQ_API_KEY is set in Streamlit Settings and Secrets.")
+        st.info("Make sure GROQ_API_KEY is set in Streamlit Secrets.")
         return
 
-    prog.progress(60, text="Running plagiarism check...")
-    plag = check_plagiarism(parsed["text"], parsed["links"])
+    prog.progress(50,text="Running plagiarism check...")
+    plag = check_plagiarism(parsed["text"],parsed["links"])
+    plag_sources,plag_snippets = get_plag_snippets(parsed["text"],parsed["links"],plag)
 
-    prog.progress(78, text="Running AI detection...")
+    prog.progress(72,text="Running AI detection...")
     ai = check_ai(parsed["text"])
 
-    prog.progress(90, text="Finding content issues...")
-    ai_snippets   = find_ai_snippets(parsed["text"])
-    plag_sources, plag_snippets = find_plag_snippets(parsed["text"], parsed["links"])
-
-    prog.progress(100, text="Done!")
-    prog.empty()
-
-    base_score  = qa.get("total", 0)
-    final_score, deductions = apply_deductions(
-        base_score, parsed["comments"], plag["percentage"], ai["ai_pct"]
-    )
+    prog.progress(95,text="Calculating final score...")
+    base_score = qa.get("total",0)
+    final_score,deductions = apply_deductions(base_score,parsed["comments"],plag["percentage"],ai["ai_pct"])
     recommendation = get_recommendation(final_score)
 
-    sub = {
-        "date":            datetime.now().strftime("%d %b %Y %H:%M"),
-        "platform":        platform,
-        "writer":          writer,
-        "title":           title,
-        "content_type":    ctype,
-        "language":        lang,
-        "word_count":      parsed["word_count"],
-        "headings":        parsed["headings"],
-        "links":           parsed["links"],
-        "comments":        parsed["comments"],
-        "qa":              qa,
-        "plagiarism":      plag,
-        "ai_detection":    ai,
-        "ai_snippets":     ai_snippets,
-        "plag_snippets":   plag_snippets,
-        "plag_sources":    plag_sources,
-        "deductions":      deductions,
-        "qa_score":        final_score,
-        "plagiarism_pct":  plag["percentage"],
-        "ai_pct":          ai["ai_pct"],
-        "recommendation":  recommendation,
-        "editor_decision": "",
-        "editor_notes":    "",
-    }
+    prog.progress(100,text="Done!")
+    prog.empty()
 
+    sub = {
+        "date":           datetime.now().strftime("%d %b %Y %H:%M"),
+        "platform":       platform,"writer":writer,"title":title,
+        "content_type":   ctype,"language":lang,"word_count":parsed["word_count"],
+        "headings":       parsed["headings"],"links":parsed["links"],"comments":parsed["comments"],
+        "qa":             qa,"plagiarism":plag,"plag_snippets":plag_snippets,"plag_sources":plag_sources,
+        "ai_detection":   ai,"deductions":deductions,"qa_score":final_score,
+        "plagiarism_pct": plag["percentage"],"ai_pct":ai["ai_pct"],
+        "recommendation": recommendation,"editor_decision":"","editor_notes":"",
+    }
     if "submissions" not in st.session_state:
         st.session_state.submissions = []
     st.session_state.submissions.append(sub)
     render_report(sub)
 
 
-# ── report renderer ────────────────────────────────────────────────────────
+# ── report ─────────────────────────────────────────────────────────────────
 def render_report(sub):
     inject_css()
     qa    = sub["qa"]
@@ -695,265 +606,186 @@ def render_report(sub):
     ai    = sub["ai_detection"]
     ded   = sub["deductions"]
     score = sub["qa_score"]
-    grade, _ = get_grade(score)
+    grade = get_grade(score)
     rec   = sub["recommendation"]
-
-    ai_snippets  = sub.get("ai_snippets", [])
-    plag_snippets = sub.get("plag_snippets", [])
-    plag_sources  = sub.get("plag_sources", [])
+    plag_snippets = sub.get("plag_snippets",[])
+    plag_sources  = sub.get("plag_sources",[])
 
     st.divider()
-
-    plat      = sub["platform"]
-    bdg_class = "bdg-bay" if plat == "Bayut" else "bdg-dub"
-    plat_html = f'<span class="bdg {bdg_class}">{plat}</span>'
+    bdg_class = "bdg-bay" if sub["platform"]=="Bayut" else "bdg-dub"
     st.markdown(
-        f"**{sub['writer']}** &nbsp; {plat_html} &nbsp; "
-        f"`{sub['content_type']}` &nbsp; `{sub['language']}` &nbsp; "
-        f"`{sub['word_count']} words` &nbsp; `{sub['date']}`",
-        unsafe_allow_html=True,
-    )
+        f"**{sub['writer']}** &nbsp; <span class='bdg {bdg_class}'>{sub['platform']}</span> &nbsp; "
+        f"`{sub['content_type']}` &nbsp; `{sub['language']}` &nbsp; `{sub['word_count']} words` &nbsp; `{sub['date']}`",
+        unsafe_allow_html=True)
     st.markdown("")
 
-    rec_labels = {
-        "approve": ("Approve",          "#d1fae5", "#065f46"),
-        "revise":  ("Request revision", "#fef3c7", "#92400e"),
-        "reject":  ("Reject",           "#fee2e2", "#991b1b"),
-    }
-    rl, rbg, rtc = rec_labels.get(rec, rec_labels["revise"])
+    rec_labels = {"approve":("Approve","#d1fae5","#065f46"),
+                  "revise":("Request revision","#fef3c7","#92400e"),
+                  "reject":("Reject","#fee2e2","#991b1b")}
+    rl,rbg,rtc = rec_labels.get(rec,rec_labels["revise"])
 
-    def br(cls, label, val):
+    def brow(cls,label,val):
         return f'<div class="{cls}"><span>{label}</span><span>{val}</span></div>'
 
-    breakdown = (
-        br("base-row", "Base score (from editor comments)", f'{ded["base_score"]} / 100') +
-        (br("ded-row", f'Editor comments ({ded["comment_count"]} comments, 1 pt each)', f'- {ded["comment_deduction"]} pts')
-         if ded["comment_deduction"] > 0 else br("ok-row", "Editor comments", "no deduction")) +
-        (br("ded-row", f'Plagiarism {ded["plag_pct"]}% — over 20% threshold', f'- {ded["plag_deduction"]} pts')
-         if ded["plag_deduction"] > 0 else br("ok-row", f'Plagiarism {ded["plag_pct"]}% — under 20% threshold', "no deduction")) +
-        (br("ded-row", f'AI content {ded["ai_pct"]}% — over 20% threshold', f'- {ded["ai_deduction"]} pts')
-         if ded["ai_deduction"] > 0 else br("ok-row", f'AI content {ded["ai_pct"]}% — under 20% threshold', "no deduction")) +
-        br("total-row", "Final score", f"{score} / 100")
+    bd = (
+        brow("base-row","Base score (from editor comments)",f'{ded["base_score"]} / 100') +
+        (brow("ded-row",f'Editor comments ({ded["comment_count"]} comments, 1 pt each)',f'- {ded["comment_deduction"]} pts')
+         if ded["comment_deduction"]>0 else brow("ok-row","Editor comments","no deduction")) +
+        (brow("ded-row",f'Plagiarism {ded["plag_pct"]}% — over 20% threshold',f'- {ded["plag_deduction"]} pts')
+         if ded["plag_deduction"]>0 else brow("ok-row",f'Plagiarism {ded["plag_pct"]}% — under 20%',"no deduction")) +
+        (brow("ded-row",f'AI content {ded["ai_pct"]}% — over 20% threshold',f'- {ded["ai_deduction"]} pts')
+         if ded["ai_deduction"]>0 else brow("ok-row",f'AI content {ded["ai_pct"]}% — under 20%',"no deduction")) +
+        brow("total-row","Final score",f"{score} / 100")
     )
 
     st.markdown(
         f'<div class="score-hero">'
         f'<div class="score-num">{score}<span class="score-den"> / 100</span></div>'
         f'<div class="score-grade">{grade}</div>'
-        f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;'
-        f'border-radius:20px;background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
+        f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;border-radius:20px;'
+        f'background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
         f'<div class="score-verdict">{qa.get("overall_feedback","")}</div>'
-        f'<div class="breakdown-box">{breakdown}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+        f'<div class="breakdown-box">{bd}</div></div>',
+        unsafe_allow_html=True)
 
     st.divider()
-
-    # ── plagiarism and AI cards with content snippets ──────────────────────
     st.markdown("#### Plagiarism and AI detection")
-    pc1, pc2 = st.columns(2)
+    pc1,pc2 = st.columns(2)
 
     with pc1:
-        plag_pct   = plag["percentage"]
-        plag_over  = plag_pct > 20
-        p_color    = "#dc2626" if plag_over else "#059669"
-        p_thresh   = (
-            f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">'
-            f'{plag_pct}% — over 20% threshold — 5 points deducted</span>'
-            if plag_over else
-            f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">'
-            f'{plag_pct}% — under 20% threshold — no deduction</span>'
-        )
-        # build snippets HTML — highlight brochure phrases inside copied sentences
+        pp   = plag["percentage"]
+        over = pp > 20
+        col  = "#dc2626" if over else "#059669"
+        thresh = (f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">{pp}% — over 20% threshold — 5 points deducted</span>'
+                  if over else
+                  f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">{pp}% — under 20% threshold — no deduction</span>')
         snip_html = ""
-        # Always show flagged sentences — works with or without source links
         if plag_snippets or plag_sources:
-            label = "Copied content detected" if plag_over else "Suspicious brochure language found"
-            snip_html = f'<div class="issue-block"><div class="issue-block-title">{label}</div>'
+            lbl = "Copied content detected" if over else "Suspicious brochure language"
+            snip_html = f'<div class="issue-block"><div class="issue-block-title">{lbl}</div>'
             for src in plag_sources[:3]:
                 snip_html += f'<div class="issue-snippet"><strong style="color:#92400e">Source matched:</strong> {src}</div>'
             for s in plag_snippets[:8]:
-                highlighted = highlight_plag_sentence(s)
-                snip_html += f'<div class="issue-snippet">{highlighted}</div>'
+                snip_html += f'<div class="issue-snippet">{highlight_plag(s)}</div>'
             snip_html += '</div>'
-
         st.markdown(
             f'<div class="detect-card">'
-            f'<div class="detect-title">Plagiarism check</div>'
-            f'<div class="detect-bar"><div class="detect-bar-f" '
-            f'style="width:{min(plag_pct,100)}%;background:{p_color}"></div></div>'
-            f'{p_thresh}'
-            f'<div class="detect-note">'
-            f'{"Content matched external sources. Rewrite the flagged sections completely." if plag_over else "Content is within the acceptable range."}'
-            f'</div>'
-            f'{snip_html}'
-            f'</div>',
-            unsafe_allow_html=True,
+            f'<div class="detect-title">Plagiarism check <span style="font-size:10px;font-weight:400;color:#888;margin-left:6px">via {plag.get("source","heuristic")}</span></div>'
+            f'<div class="detect-bar"><div class="detect-bar-f" style="width:{min(pp,100)}%;background:{col}"></div></div>'
+            f'{thresh}<div class="detect-note">{"Rewrite all flagged sections completely." if over else "Content is within acceptable range."}</div>'
+            f'{snip_html}</div>',unsafe_allow_html=True)
+
+        # TextGuard button for full internet plagiarism check
+        st.link_button(
+            '🔍  Run full web plagiarism check on TextGuard',
+            'https://textguard.ai/plagiarism',
+            use_container_width=True,
+            help='Opens TextGuard — paste the article there for a full internet-wide scan'
         )
+        st.caption('TextGuard searches billions of web pages. Paste the article text there for 100% accurate results.')
 
     with pc2:
-        ai_pct   = ai["ai_pct"]
-        ai_over  = ai_pct > 20
-        a_color  = "#dc2626" if ai_over else "#059669"
-        a_thresh = (
-            f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">'
-            f'{ai_pct}% — over 20% threshold — 5 points deducted</span>'
-            if ai_over else
-            f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">'
-            f'{ai_pct}% — under 20% threshold — no deduction</span>'
-        )
-        # highlight AI phrases in snippets
-        snip_html = ""
-        if ai_over and ai_snippets:
-            snip_html = '<div class="issue-block"><div class="issue-block-title">Flagged sentences</div>'
-            for s in ai_snippets[:3]:
-                highlighted = s
-                for phrase in AI_PHRASES:
-                    if phrase in highlighted.lower():
-                        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
-                        highlighted = pattern.sub(
-                            f'<span class="ai-highlight">{phrase}</span>', highlighted
-                        )
-                snip_html += f'<div class="issue-snippet">{highlighted}</div>'
-            snip_html += '</div>'
-
+        ap      = ai["ai_pct"]
+        ai_over = ap > 20
+        a_col   = "#dc2626" if ai_over else "#059669"
+        src_lbl = "GPTZero" if ai.get("source")=="GPTZero" else "heuristic"
+        a_thresh = (f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">{ap}% — over 20% threshold — 5 points deducted</span>'
+                    if ai_over else
+                    f'<span class="detect-thresh" style="background:#d1fae5;color:#065f46">{ap}% — under 20% threshold — no deduction</span>')
+        ai_sents    = ai.get("ai_sentences",[])
+        ai_snip_html = ""
+        if ai_sents:
+            ai_snip_html = '<div class="issue-block"><div class="issue-block-title">Flagged sentences</div>'
+            for s in ai_sents[:5]:
+                ai_snip_html += f'<div class="issue-snippet">{highlight_ai(s)}</div>'
+            ai_snip_html += '</div>'
         st.markdown(
             f'<div class="detect-card">'
-            f'<div class="detect-title">AI content detection</div>'
-            f'<div class="detect-bar"><div class="detect-bar-f" '
-            f'style="width:{min(ai_pct,100)}%;background:{a_color}"></div></div>'
-            f'{a_thresh}'
-            f'<div class="detect-note">'
-            f'{"High AI content detected. Flagged sentences shown below." if ai_over else "Content appears mostly human-written."}'
-            f'</div>'
+            f'<div class="detect-title">AI detection <span style="font-size:10px;font-weight:400;color:#888;margin-left:6px">via {src_lbl}</span></div>'
+            f'<div class="detect-bar"><div class="detect-bar-f" style="width:{min(ap,100)}%;background:{a_col}"></div></div>'
+            f'{a_thresh}<div class="detect-note">{"High AI content detected." if ai_over else "Content appears mostly human-written."}</div>'
             f'<div class="detect-split">'
-            f'<div class="detect-seg"><div class="detect-seg-n" style="color:#059669">{ai["human_pct"]}%</div>'
-            f'<div class="detect-seg-l">Human</div></div>'
-            f'<div class="detect-seg"><div class="detect-seg-n" style="color:{a_color}">{ai_pct}%</div>'
-            f'<div class="detect-seg-l">AI likely</div></div>'
-            f'</div>'
-            f'{snip_html}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+            f'<div class="detect-seg"><div class="detect-seg-n" style="color:#059669">{ai["human_pct"]}%</div><div class="detect-seg-l">Human</div></div>'
+            f'<div class="detect-seg"><div class="detect-seg-n" style="color:{a_col}">{ap}%</div><div class="detect-seg-l">AI likely</div></div>'
+            f'</div>{ai_snip_html}</div>',unsafe_allow_html=True)
 
     st.divider()
-
-    # ── category scores ────────────────────────────────────────────────────
     st.markdown("#### Category scores")
     if not sub["comments"]:
-        st.markdown(
-            '<div class="no-comments-notice">'
-            'No editor comments were found in the uploaded file. '
-            'All categories have been awarded full marks. '
-            'Add editor comments to the document to get a meaningful score.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="no-cmt-notice">No editor comments found. All categories awarded full marks. Add comments to the .docx file for a real evaluation.</div>',unsafe_allow_html=True)
 
-    for cat, mx in CAT_MAX.items():
-        data     = qa["scores"].get(cat, {})
-        s        = data.get("score", 0)
-        feedback = data.get("feedback", "")
-        refs     = data.get("comment_refs", [])
-
-        col_a, col_b = st.columns([4, 1])
-        ref_html = ""
-        if refs:
-            ref_html = " ".join(
-                f'<span class="cat-ref">Comment {r}</span>' for r in refs
-            )
-        col_a.markdown(
-            f"**{cat}**" + (f' &nbsp; {ref_html}' if ref_html else ""),
-            unsafe_allow_html=True,
-        )
-        col_a.progress(s / mx)
-        col_b.markdown(f"**{s} / {mx}**")
-        st.caption(feedback)
+    for cat,mx in CAT_MAX.items():
+        data = qa["scores"].get(cat,{})
+        s    = data.get("score",0)
+        fb   = data.get("feedback","")
+        refs = data.get("comment_refs",[])
+        ref_html = " ".join(f'<span class="cat-ref">Comment {r}</span>' for r in refs)
+        ca,cb = st.columns([4,1])
+        ca.markdown(f"**{cat}**"+(f" &nbsp; {ref_html}" if ref_html else ""),unsafe_allow_html=True)
+        ca.progress(s/mx)
+        cb.markdown(f"**{s} / {mx}**")
+        st.caption(fb)
         st.markdown("")
 
     st.divider()
-
-    # structure
     st.markdown("#### Document structure")
-    sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("Headings",       len(sub["headings"]))
-    sc2.metric("Total links",    len(sub["links"]))
+    sc1,sc2,sc3 = st.columns(3)
+    sc1.metric("Headings",     len(sub["headings"]))
+    sc2.metric("Total links",  len(sub["links"]))
     internal = [l for l in sub["links"] if sub["platform"].lower() in l.lower()]
-    sc3.metric("Internal links", len(internal))
+    sc3.metric("Internal links",len(internal))
 
     if sub["comments"]:
         st.markdown(f"**Editor comments — {len(sub['comments'])} found**")
-        for idx, c in enumerate(sub["comments"], 1):
+        for idx,c in enumerate(sub["comments"],1):
             st.markdown(
-                f'<div class="cmt-card">'
-                f'<span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
-                f'{c["text"]}'
-                f'<div class="cmt-deduct">1 point deducted from final score</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+                f'<div class="cmt-card"><span class="cmt-author">Comment {idx} — {c["author"]}</span><br>'
+                f'{c["text"]}<div class="cmt-deduct">1 point deducted</div></div>',
+                unsafe_allow_html=True)
 
     st.divider()
-
-    col_s, col_i = st.columns(2)
+    col_s,col_i = st.columns(2)
     with col_s:
         st.markdown("#### Strengths")
-        strengths = qa.get("key_strengths", [])
-        if strengths:
-            for s in strengths:
-                st.markdown(f'<span class="tag-str">{s}</span>', unsafe_allow_html=True)
-        else:
-            st.caption("Strengths will appear once editor comments are provided.")
+        strengths = qa.get("key_strengths",[])
+        for s in strengths: st.markdown(f'<span class="tag-str">{s}</span>',unsafe_allow_html=True)
+        if not strengths: st.caption("Add editor comments to see strengths.")
     with col_i:
         st.markdown("#### Required improvements")
-        for imp in qa.get("areas_for_improvement", []):
-            st.markdown(f'<span class="tag-imp">{imp}</span>', unsafe_allow_html=True)
+        for imp in qa.get("areas_for_improvement",[]): st.markdown(f'<span class="tag-imp">{imp}</span>',unsafe_allow_html=True)
 
-    suggestions = qa.get("suggestions", [])
+    suggestions = qa.get("suggestions",[])
     if suggestions:
         st.divider()
         st.markdown("#### Suggestions to improve the article")
         st.caption("Specific actions to address each editor comment")
         for sug in suggestions:
             st.markdown(
-                f'<div class="suggest-item">'
-                f'<div class="suggest-num">{sug.get("number","")}</div>'
+                f'<div class="suggest-item"><div class="suggest-num">{sug.get("number","")}</div>'
                 f'<div><div>{sug.get("action","")}</div>'
-                f'<div class="suggest-cat">Addresses: {sug.get("category","")}</div>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
+                f'<div class="suggest-cat">Addresses: {sug.get("category","")}</div></div></div>',
+                unsafe_allow_html=True)
 
     st.divider()
     st.markdown("#### Editor decision")
     st.caption("The AI recommendation is a guide. You make the final call.")
-    rec_idx  = {"approve": 0, "revise": 1, "reject": 2}
-    decision = st.radio(
-        "Decision",
-        ["Approve", "Request revision", "Reject"],
-        index=rec_idx.get(rec, 1),
-        horizontal=True,
-        key=f"dec_{sub['title']}_{sub['date']}",
-    )
-    notes = st.text_area(
-        "Notes for writer (required for revision and rejection)",
-        height=90,
-        placeholder="Tell the writer exactly what to fix.",
-        key=f"notes_{sub['title']}_{sub['date']}",
-    )
-    if st.button("Confirm decision", type="primary", use_container_width=True,
+    rec_idx = {"approve":0,"revise":1,"reject":2}
+    decision = st.radio("Decision",["Approve","Request revision","Reject"],
+                        index=rec_idx.get(rec,1),horizontal=True,
+                        key=f"dec_{sub['title']}_{sub['date']}")
+    notes = st.text_area("Notes for writer (required for revision and rejection)",height=90,
+                         placeholder="Tell the writer exactly what to fix.",
+                         key=f"notes_{sub['title']}_{sub['date']}")
+    if st.button("Confirm decision",type="primary",use_container_width=True,
                  key=f"conf_{sub['title']}_{sub['date']}"):
-        if decision in ("Request revision", "Reject") and not notes.strip():
-            st.error("Please add notes for the writer before confirming.")
+        if decision in ("Request revision","Reject") and not notes.strip():
+            st.error("Please add notes before confirming.")
         else:
             sub["editor_decision"] = decision
             sub["editor_notes"]    = notes
             log_to_sheets(sub)
             st.success(f"Decision saved: {decision}")
-            if notes:
-                st.info(f"Notes for {sub['writer']}: {notes}")
+            if notes: st.info(f"Notes for {sub['writer']}: {notes}")
 
     st.caption(f"Content QA System — {sub['platform']} — Powered by Groq — {sub['date']}")
 
@@ -961,59 +793,50 @@ def render_report(sub):
 # ── dashboard ──────────────────────────────────────────────────────────────
 def page_dashboard():
     inject_css()
-    st.markdown(
-        '<div class="qa-header"><h1>Dashboard</h1></div>',
-        unsafe_allow_html=True,
-    )
-
-    all_subs = st.session_state.get("submissions", [])
+    st.markdown('<div class="qa-header"><h1>Dashboard</h1></div>',unsafe_allow_html=True)
+    all_subs = st.session_state.get("submissions",[])
     if not all_subs:
-        st.info("No submissions yet. Go to Submit article to start.")
+        st.info("No submissions yet.")
         return
 
-    approved = sum(1 for s in all_subs if s.get("editor_decision") == "Approve")
-    revision = sum(1 for s in all_subs if s.get("editor_decision") == "Request revision")
-    rejected = sum(1 for s in all_subs if s.get("editor_decision") == "Reject")
+    approved = sum(1 for s in all_subs if s.get("editor_decision")=="Approve")
+    revision = sum(1 for s in all_subs if s.get("editor_decision")=="Request revision")
+    rejected = sum(1 for s in all_subs if s.get("editor_decision")=="Reject")
     pending  = sum(1 for s in all_subs if not s.get("editor_decision"))
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Total",    len(all_subs))
-    m2.metric("Approved", approved)
-    m3.metric("Revision", revision)
-    m4.metric("Rejected", rejected)
-    m5.metric("Pending",  pending)
-
+    m1,m2,m3,m4,m5 = st.columns(5)
+    m1.metric("Total",len(all_subs))
+    m2.metric("Approved",approved)
+    m3.metric("Revision",revision)
+    m4.metric("Rejected",rejected)
+    m5.metric("Pending",pending)
     st.divider()
 
-    all_writers   = sorted(set(s["writer"] for s in all_subs if s.get("writer")))
-    f1, f2, f3, f4, f5 = st.columns(5)
-    writer_filter = f1.selectbox("Writer",       ["All"] + all_writers)
-    plat_filter   = f2.selectbox("Platform",     ["All"] + PLATFORMS)
-    type_filter   = f3.selectbox("Content type", ["All"] + CONTENT_TYPES)
-    lang_filter   = f4.selectbox("Language",     ["All"] + LANGUAGES)
-    status_filter = f5.selectbox("Status",       ["All", "Pending", "Approve", "Request revision", "Reject"])
+    all_writers = sorted(set(s["writer"] for s in all_subs if s.get("writer")))
+    f1,f2,f3,f4,f5 = st.columns(5)
+    wf = f1.selectbox("Writer",      ["All"]+all_writers)
+    pf = f2.selectbox("Platform",    ["All"]+PLATFORMS)
+    tf = f3.selectbox("Content type",["All"]+CONTENT_TYPES)
+    lf = f4.selectbox("Language",    ["All"]+LANGUAGES)
+    sf = f5.selectbox("Status",      ["All","Pending","Approve","Request revision","Reject"])
 
     filtered = all_subs
-    if writer_filter != "All": filtered = [s for s in filtered if s.get("writer")       == writer_filter]
-    if plat_filter   != "All": filtered = [s for s in filtered if s["platform"]         == plat_filter]
-    if type_filter   != "All": filtered = [s for s in filtered if s["content_type"]     == type_filter]
-    if lang_filter   != "All": filtered = [s for s in filtered if s["language"]         == lang_filter]
-    if status_filter != "All":
-        if status_filter == "Pending":
-            filtered = [s for s in filtered if not s.get("editor_decision")]
-        else:
-            filtered = [s for s in filtered if s.get("editor_decision") == status_filter]
+    if wf!="All": filtered=[s for s in filtered if s.get("writer")==wf]
+    if pf!="All": filtered=[s for s in filtered if s["platform"]==pf]
+    if tf!="All": filtered=[s for s in filtered if s["content_type"]==tf]
+    if lf!="All": filtered=[s for s in filtered if s["language"]==lf]
+    if sf!="All":
+        if sf=="Pending": filtered=[s for s in filtered if not s.get("editor_decision")]
+        else:             filtered=[s for s in filtered if s.get("editor_decision")==sf]
 
     st.markdown(f"**{len(filtered)} submissions**")
     for sub in reversed(filtered):
-        dec       = sub.get("editor_decision") or "Pending"
-        plag_flag = "  High plagiarism" if sub.get("plagiarism_pct", 0) > 20 else ""
-        ai_flag   = "  High AI content" if sub.get("ai_pct", 0) > 20 else ""
-        label = (
-            f"{sub['writer']} ({sub['platform']}) — "
-            f"{sub['title'][:45]}{'...' if len(sub['title'])>45 else ''} "
-            f"| Score: {sub['qa_score']} | {dec}{plag_flag}{ai_flag} | {sub['date']}"
-        )
+        dec   = sub.get("editor_decision") or "Pending"
+        flags = ("  High plagiarism" if sub.get("plagiarism_pct",0)>20 else "") + \
+                ("  High AI" if sub.get("ai_pct",0)>20 else "")
+        label = (f"{sub['writer']} ({sub['platform']}) — "
+                 f"{sub['title'][:45]}{'...' if len(sub['title'])>45 else ''} "
+                 f"| Score: {sub['qa_score']} | {dec}{flags} | {sub['date']}")
         with st.expander(label):
             render_report(sub)
 
@@ -1023,11 +846,8 @@ def main():
     if "submissions" not in st.session_state:
         st.session_state.submissions = []
     page = sidebar()
-    if "Submit" in page:
-        page_submit()
-    else:
-        page_dashboard()
-
+    if "Submit" in page: page_submit()
+    else:                page_dashboard()
 
 if __name__ == "__main__":
     main()
