@@ -343,14 +343,14 @@ ARTICLE:
     try:
         raw   = call_ai(prompt)
         clean = re.sub(r"```json|```", "", raw).strip()
-        m     = re.search(r'\{{.*\}}', clean, re.DOTALL)
+        m     = re.search(r'{.*}', clean, re.DOTALL)
         if m: clean = m.group(0)
         result = json.loads(clean)
 
         pct       = min(int(result.get("plagiarism_percentage", 0)), 100)
         sentences = result.get("flagged_sentences", [])[:15]
 
-        return {{
+        return {
             "percentage":       pct,
             "flagged_sources":  flagged_sources,
             "flagged_sentences":sentences,
@@ -358,7 +358,7 @@ ARTICLE:
             "source":           "Groq",
             "assessment":       result.get("assessment",""),
             "status":           "danger" if pct>20 else "warn" if pct>10 else "safe",
-        }}
+        }
     except Exception:
         # Heuristic fallback if Groq call fails
         text_lower = text.lower()
@@ -367,9 +367,9 @@ ARTICLE:
         base  = min(int((math.sqrt(hits)/math.sqrt(max(total,1)))*60), 60)
         bonus = min(len(flagged_sources)*4, 15)
         pct   = min(base+bonus, 100)
-        return {{"percentage":pct,"flagged_sources":flagged_sources,
+        return {"percentage":pct,"flagged_sources":flagged_sources,
                 "flagged_sentences":[],"hits":hits,"source":"heuristic",
-                "status":"danger" if pct>20 else "warn" if pct>10 else "safe"}}
+                "status":"danger" if pct>20 else "warn" if pct>10 else "safe"}
 
 def get_plag_snippets(text, links, plag_result=None):
     """Return (sources, flagged_sentences). Uses Groq result if available."""
