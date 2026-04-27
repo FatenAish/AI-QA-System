@@ -215,6 +215,20 @@ def inject_css():
         background:#ffffff!important;
         box-shadow:0 2px 4px rgba(0,0,0,.07)!important;
         padding:3px 4px!important}
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div{
+        border-radius:10px!important;
+        border:2px solid #d1d5db!important;
+        background:#ffffff!important;
+        box-shadow:0 2px 4px rgba(0,0,0,.07)!important}
+    [data-baseweb="select"] > div{
+        border-radius:10px!important;
+        border:2px solid #d1d5db!important;
+        background:#ffffff!important;
+        box-shadow:0 2px 4px rgba(0,0,0,.07)!important}
+    [data-baseweb="base-input"]{
+        border-radius:10px!important;
+        border:2px solid #d1d5db!important;
+        background:#ffffff!important}
     [data-testid="stForm"]{border:none!important;padding:0!important;background:transparent!important}
     div[class*="stTextInput"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important;margin-bottom:4px!important}
     div[class*="stSelectbox"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important;margin-bottom:4px!important}
