@@ -420,7 +420,7 @@ div[role="radiogroup"] label > div:first-child {
 }
 
 /* ─────────────────────────────────────────
-   CUSTOM UPLOAD AREA - MATCH SCREENSHOT
+   CUSTOM UPLOAD AREA - FIXED CENTERED VERSION
 ───────────────────────────────────────── */
 .upload-head {
     display: flex;
@@ -448,12 +448,14 @@ div[role="radiogroup"] label > div:first-child {
     justify-content: center;
 }
 
-/* Hide Streamlit's visible label because we use the custom header above */
+/* Hide Streamlit label because we already created the label above */
 [data-testid="stFileUploader"] > label {
     display: none !important;
 }
 
-/* Dropzone shape */
+/* The dropzone itself */
+[data-testid="stFileUploader"] section,
+[data-testid="stFileUploaderDropzone"],
 [data-testid="stFileUploadDropzone"] {
     min-height: 152px !important;
     border: 1.5px dashed #9fa8ff !important;
@@ -467,14 +469,28 @@ div[role="radiogroup"] label > div:first-child {
     overflow: hidden !important;
 }
 
+/* Hover */
+[data-testid="stFileUploader"] section:hover,
+[data-testid="stFileUploaderDropzone"]:hover,
 [data-testid="stFileUploadDropzone"]:hover {
     border-color: #7c3aed !important;
     background: #f5f3ff !important;
 }
 
-/* Hide all native uploader text/icons */
+/* Hide Streamlit's default visible content inside the uploader */
+[data-testid="stFileUploader"] section button,
+[data-testid="stFileUploader"] section svg,
+[data-testid="stFileUploader"] section small,
+[data-testid="stFileUploader"] section span,
+[data-testid="stFileUploader"] section p,
+[data-testid="stFileUploader"] section [data-testid="stFileUploaderDropzoneInstructions"],
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploaderDropzone"] svg,
+[data-testid="stFileUploaderDropzone"] small,
+[data-testid="stFileUploaderDropzone"] span,
+[data-testid="stFileUploaderDropzone"] p,
+[data-testid="stFileUploadDropzone"] button,
 [data-testid="stFileUploadDropzone"] svg,
-[data-testid="stFileUploaderDropzoneInstructions"],
 [data-testid="stFileUploadDropzone"] small,
 [data-testid="stFileUploadDropzone"] span,
 [data-testid="stFileUploadDropzone"] p {
@@ -482,20 +498,20 @@ div[role="radiogroup"] label > div:first-child {
     visibility: hidden !important;
 }
 
-/* Make the native Upload button invisible but keep the whole box clickable */
-[data-testid="stFileUploadDropzone"] button {
+/* Keep the native uploader clickable */
+[data-testid="stFileUploader"] section input[type="file"] {
     position: absolute !important;
     inset: 0 !important;
     width: 100% !important;
     height: 100% !important;
     opacity: 0 !important;
-    z-index: 20 !important;
     cursor: pointer !important;
-    border: none !important;
-    background: transparent !important;
+    z-index: 20 !important;
 }
 
-/* Center purple icon */
+/* Purple upload icon */
+[data-testid="stFileUploader"] section::before,
+[data-testid="stFileUploaderDropzone"]::before,
 [data-testid="stFileUploadDropzone"]::before {
     content: "⇧";
     position: absolute;
@@ -513,10 +529,14 @@ div[role="radiogroup"] label > div:first-child {
     align-items: center;
     justify-content: center;
     box-shadow: 0 10px 20px rgba(91,92,226,.20);
-    z-index: 2;
+    z-index: 5;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
-/* Main line - bold */
+/* Main centered line */
+[data-testid="stFileUploader"] section::after,
+[data-testid="stFileUploaderDropzone"]::after,
 [data-testid="stFileUploadDropzone"]::after {
     content: "Click or drag a file to upload";
     position: absolute;
@@ -529,10 +549,14 @@ div[role="radiogroup"] label > div:first-child {
     line-height: 1.4;
     font-weight: 800;
     color: #111827;
-    z-index: 2;
+    z-index: 5;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
-/* Second line - normal weight */
+/* Second centered line */
+[data-testid="stFileUploader"] section > div::after,
+[data-testid="stFileUploaderDropzone"] > div::after,
 [data-testid="stFileUploadDropzone"] > div::after {
     content: "DOCX, PDF or TXT · up to 200MB per file";
     position: absolute;
@@ -545,9 +569,10 @@ div[role="radiogroup"] label > div:first-child {
     line-height: 1.4;
     font-weight: 400;
     color: #6b7280;
-    z-index: 2;
+    z-index: 5;
     visibility: visible !important;
     opacity: 1 !important;
+    pointer-events: none !important;
 }
 
 /* Main action button */
