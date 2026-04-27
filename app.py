@@ -182,6 +182,15 @@ def inject_css():
         background:linear-gradient(135deg,#3730a3,#6d28d9)!important;
         color:#fff!important;border:none!important;border-radius:10px!important;
         font-size:14px!important;font-weight:600!important;padding:13px!important;width:100%!important}
+    /* platform toggle buttons */
+    button[kind="secondaryFormSubmit"]{
+        background:#f3f4f6!important;color:#6b7280!important;
+        border:1.5px solid #e5e7eb!important;border-radius:50px!important;
+        font-size:13px!important;font-weight:500!important;padding:6px 20px!important}
+    button[kind="primaryFormSubmit"]{
+        background:#10b981!important;color:#fff!important;
+        border:none!important;border-radius:50px!important;
+        font-size:13px!important;font-weight:500!important;padding:6px 20px!important}
     [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
     [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
     [data-testid="stFileUploadDropzone"]{background:#ffffff!important;border:1.5px dashed #d1d5db!important;border-radius:12px!important;min-height:130px!important;padding:20px!important}
@@ -189,14 +198,7 @@ def inject_css():
     [data-testid="stFileUploadDropzone"] > div{background:transparent!important;border:none!important}
     [data-testid="stFileUploaderDropzoneInstructions"] > div{background:transparent!important}
     [data-testid="stFileUploaderDropzoneInstructions"] svg{background:#7c3aed!important;border-radius:12px!important;padding:10px!important;color:#fff!important;width:40px!important;height:40px!important}
-    /* platform pill toggle */
-    [data-testid="stRadio"] > div{display:flex!important;flex-direction:row!important;background:#f3f4f6!important;border-radius:50px!important;padding:3px!important;gap:2px!important;width:fit-content!important}
-    [data-testid="stRadio"] label{border-radius:50px!important;padding:7px 22px!important;font-size:13px!important;font-weight:500!important;cursor:pointer!important;margin:0!important;min-height:unset!important;display:flex!important;align-items:center!important;justify-content:center!important}
-    [data-testid="stRadio"] label:has(input:checked){background:#10b981!important;color:#fff!important}
-    [data-testid="stRadio"] label:not(:has(input:checked)){background:transparent!important;color:#6b7280!important}
-    [data-testid="stRadio"] label:not(:has(input:checked)):hover{background:rgba(0,0,0,.04)!important;color:#374151!important}
-    [data-testid="stRadio"] input[type="radio"]{position:fixed!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}
-    [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important;color:inherit!important}
+
     [data-testid="stTextInput"] input{
         border-radius:10px!important;
         border:2px solid #d1d5db!important;
@@ -744,9 +746,25 @@ def page_submit():
         c3,c4  = st.columns(2)
         ctype  = c3.selectbox("Content type",CONTENT_TYPES)
         lang   = c4.selectbox("Language",LANGUAGES)
+        # Platform selector using session state buttons
+        if "platform" not in st.session_state:
+            st.session_state.platform = "Bayut"
+
         st.markdown("**Platform**")
-        platform = st.radio("Platform",PLATFORMS,horizontal=True,label_visibility="collapsed")
-        bay = platform=="Bayut"
+        p1, p2, p3 = st.columns([1.2, 1.2, 6])
+        with p1:
+            if st.form_submit_button("Bayut",
+                use_container_width=True,
+                type="primary" if st.session_state.platform=="Bayut" else "secondary"):
+                st.session_state.platform = "Bayut"
+        with p2:
+            if st.form_submit_button("Dubizzle",
+                use_container_width=True,
+                type="primary" if st.session_state.platform=="Dubizzle" else "secondary"):
+                st.session_state.platform = "Dubizzle"
+
+        platform = st.session_state.platform
+        bay = platform == "Bayut"
         upload = st.file_uploader("Upload article file",type=["docx","pdf","txt"],
                     help=".docx recommended — headings, links and editor comments are extracted automatically")
         go = st.form_submit_button("Run full evaluation",use_container_width=True,type="primary")
