@@ -696,18 +696,20 @@ div[class*="stFileUploader"] > label {
    INTERACTIVE REDESIGN ADDITIONS
 ───────────────────────────────────────── */
 .block-container {
-    max-width: 1320px !important;
+    max-width: 1220px !important;
     padding-top: 1.8rem !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
 }
 
 .qa-shell {
-    max-width: 1280px;
+    max-width: 1160px;
     margin: 0 auto;
 }
 
 .qa-hero {
     margin-bottom: 24px !important;
-    min-height: 150px !important;
+    min-height: 138px !important;
     position: relative !important;
     overflow: hidden !important;
 }
@@ -1057,6 +1059,16 @@ div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock
         grid-template-columns: 1fr 1fr;
         gap: 8px;
     }
+}
+
+
+/* Keep the submit page centered and prevent side cards from drifting */
+div[data-testid="column"] .side-card {
+    width: 100%;
+}
+
+div[data-testid="column"] {
+    align-self: flex-start;
 }
 
 </style>
@@ -1706,11 +1718,6 @@ def page_submit():
                     type="primary"
                 )
 
-        if not go:
-            st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
     with side_col:
         st.markdown(
             """
@@ -1774,6 +1781,11 @@ def page_submit():
             """,
             unsafe_allow_html=True
         )
+
+    if not go:
+        st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
 
     if not writer or not title or not upload:
         st.error("Please fill in writer name, title and upload a file.")
