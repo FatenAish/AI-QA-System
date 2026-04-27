@@ -184,7 +184,11 @@ def inject_css():
         font-size:14px!important;font-weight:600!important;padding:13px!important;width:100%!important}
     [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
     [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
-    [data-testid="stFileUploadDropzone"]{background:#ffffff!important;border:1.5px dashed #d1d5db!important;border-radius:12px!important;min-height:130px!important}
+    [data-testid="stFileUploadDropzone"]{background:#ffffff!important;border:1.5px dashed #d1d5db!important;border-radius:12px!important;min-height:130px!important;padding:20px!important}
+    [data-testid="stFileUploadDropzone"]:hover{border-color:#a78bfa!important;background:#faf5ff!important}
+    [data-testid="stFileUploadDropzone"] > div{background:transparent!important;border:none!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] > div{background:transparent!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] svg{background:#7c3aed!important;border-radius:12px!important;padding:10px!important;color:#fff!important;width:40px!important;height:40px!important}
     [data-testid="stTextInput"] input{border-radius:8px!important;border:1px solid #e5e7eb!important}
     [data-testid="stSelectbox"] > div > div{border-radius:8px!important;border:1px solid #e5e7eb!important}
     </style>""", unsafe_allow_html=True)
