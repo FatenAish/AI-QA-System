@@ -1074,6 +1074,41 @@ div[data-testid="column"] {
     align-self: flex-start;
 }
 
+
+/* Hide Streamlit's native uploaded-file preview inside the dropzone */
+[data-testid="stFileUploadDropzone"] [data-testid*="File"],
+[data-testid="stFileUploadDropzone"] [data-testid*="Uploaded"],
+[data-testid="stFileUploaderDropzone"] [data-testid*="File"],
+[data-testid="stFileUploaderDropzone"] [data-testid*="Uploaded"],
+[data-testid="stFileUploader"] section [data-testid*="File"],
+[data-testid="stFileUploader"] section [data-testid*="Uploaded"] {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    display: none !important;
+}
+
+/* Hide any leftover native filename block after upload */
+[data-testid="stFileUploadDropzone"] > div > div:not([data-testid="stFileUploaderDropzoneInstructions"]),
+[data-testid="stFileUploaderDropzone"] > div > div:not([data-testid="stFileUploaderDropzoneInstructions"]) {
+    opacity: 0 !important;
+    visibility: hidden !important;
+}
+
+/* Force our custom upload text to remain on top after a file is selected */
+[data-testid="stFileUploader"] section::before,
+[data-testid="stFileUploaderDropzone"]::before,
+[data-testid="stFileUploadDropzone"]::before,
+[data-testid="stFileUploader"] section::after,
+[data-testid="stFileUploaderDropzone"]::after,
+[data-testid="stFileUploadDropzone"]::after,
+[data-testid="stFileUploader"] section > div::after,
+[data-testid="stFileUploaderDropzone"] > div::after,
+[data-testid="stFileUploadDropzone"] > div::after {
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: none !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
