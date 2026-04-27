@@ -32,7 +32,7 @@ try:
 except ImportError:
     SHEETS_OK = False
 
-st.set_page_config(page_title="Content QA System", page_icon="Q", layout="centered",
+st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",
                    initial_sidebar_state="expanded")
 
 PLATFORMS     = ["Bayut", "Dubizzle"]
@@ -701,7 +701,7 @@ div[class*="stFileUploader"] > label {
 }
 
 .qa-shell {
-    max-width: 1240px;
+    max-width: 1280px;
     margin: 0 auto;
 }
 
@@ -779,12 +779,23 @@ div[class*="stFileUploader"] > label {
 }
 
 .form-card-panel {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 22px;
-    padding: 26px 28px;
-    box-shadow: 0 18px 42px rgba(17,24,39,.07);
-    margin-bottom: 12px;
+    display: none;
+}
+
+/* Main form card created with st.container(border=True) */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #ffffff !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 22px !important;
+    box-shadow: 0 18px 42px rgba(17,24,39,.07) !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+    border-radius: 22px !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
+    gap: 0.9rem !important;
 }
 
 .form-card-panel .form-card-header {
@@ -1593,13 +1604,12 @@ def page_submit():
         unsafe_allow_html=True
     )
 
-    main_col, side_col = st.columns([3.2, 1.15], gap="large")
+    main_col, side_col = st.columns([3.1, 1.05], gap="large")
 
     with main_col:
-        st.markdown('<div class="form-card-panel">', unsafe_allow_html=True)
-
-        st.markdown(
-            """
+        with st.container(border=True):
+            st.markdown(
+                """
 <div class="form-card-header">
   <div>
     <div class="form-card-title">New submission</div>
@@ -1608,102 +1618,93 @@ def page_submit():
   <div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div>
 </div>
 """,
-            unsafe_allow_html=True
-        )
-
-        with st.form("qa_form"):
-            c1, c2 = st.columns(2)
-            writer = c1.text_input("Writer name", placeholder="e.g. Sarah Ahmed")
-            title = c2.text_input("Article title", placeholder="e.g. Everything About Mortgages")
-
-            c3, c4 = st.columns(2)
-            ctype = c3.selectbox("Content type", CONTENT_TYPES)
-            lang = c4.selectbox("Language", LANGUAGES)
-
-            st.markdown(
-                """
-                <div class="platform-row-wrap">
-                    <span class="platform-label">Platform</span>
-                </div>
-                """,
                 unsafe_allow_html=True
             )
 
-            platform = st.radio(
-                "Platform",
-                PLATFORMS,
-                horizontal=True,
-                label_visibility="collapsed",
-                key="platform_choice"
-            )
+            with st.form("qa_form"):
+                c1, c2 = st.columns(2)
+                writer = c1.text_input("Writer name", placeholder="e.g. Sarah Ahmed")
+                title = c2.text_input("Article title", placeholder="e.g. Everything About Mortgages")
 
-            st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
+                c3, c4 = st.columns(2)
+                ctype = c3.selectbox("Content type", CONTENT_TYPES)
+                lang = c4.selectbox("Language", LANGUAGES)
 
-            st.markdown(
-                """
-                <div class="upload-head">
-                    <div class="upload-head-label">Upload article file</div>
-                    <div class="upload-head-help">?</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                st.markdown('<span class="platform-label">Platform</span>', unsafe_allow_html=True)
 
-            upload = st.file_uploader(
-                "Upload article file",
-                type=["docx", "pdf", "txt"],
-                label_visibility="collapsed"
-            )
+                platform = st.radio(
+                    "Platform",
+                    PLATFORMS,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="platform_choice"
+                )
 
-            if upload:
-                size_mb = upload.size / (1024 * 1024)
-                file_ext = upload.name.split(".")[-1].upper() if "." in upload.name else "FILE"
+                st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
+
+                st.markdown(
+                    """
+                    <div class="upload-head">
+                        <div class="upload-head-label">Upload article file</div>
+                        <div class="upload-head-help">?</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                upload = st.file_uploader(
+                    "Upload article file",
+                    type=["docx", "pdf", "txt"],
+                    label_visibility="collapsed"
+                )
+
+                if upload:
+                    size_mb = upload.size / (1024 * 1024)
+                    file_ext = upload.name.split(".")[-1].upper() if "." in upload.name else "FILE"
+                    st.markdown(
+                        f"""
+                        <div class="file-card">
+                            <div class="file-icon">▤</div>
+                            <div>
+                                <div class="file-title">{upload.name}</div>
+                                <div class="file-meta">{file_ext} • {size_mb:.1f} MB</div>
+                            </div>
+                            <div class="file-status">● File uploaded</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+                writer_done = bool(writer.strip())
+                title_done = bool(title.strip())
+                ctype_done = bool(ctype)
+                upload_done = bool(upload)
+
                 st.markdown(
                     f"""
-                    <div class="file-card">
-                        <div class="file-icon">▤</div>
-                        <div>
-                            <div class="file-title">{upload.name}</div>
-                            <div class="file-meta">{file_ext} • {size_mb:.1f} MB</div>
+                    <div class="precheck">
+                        <div class="precheck-item {'done' if writer_done else ''}">
+                            <span class="precheck-dot">✓</span><span>Writer name added</span>
                         </div>
-                        <div class="file-status">● File uploaded</div>
+                        <div class="precheck-item {'done' if title_done else ''}">
+                            <span class="precheck-dot">✓</span><span>Article title added</span>
+                        </div>
+                        <div class="precheck-item {'done' if ctype_done else ''}">
+                            <span class="precheck-dot">✓</span><span>Content type selected</span>
+                        </div>
+                        <div class="precheck-item {'done' if upload_done else ''}">
+                            <span class="precheck-dot">✓</span><span>File uploaded</span>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
 
-            writer_done = bool(writer.strip())
-            title_done = bool(title.strip())
-            ctype_done = bool(ctype)
-            upload_done = bool(upload)
-
-            st.markdown(
-                f"""
-                <div class="precheck">
-                    <div class="precheck-item {'done' if writer_done else ''}">
-                        <span class="precheck-dot">✓</span><span>Writer name added</span>
-                    </div>
-                    <div class="precheck-item {'done' if title_done else ''}">
-                        <span class="precheck-dot">✓</span><span>Article title added</span>
-                    </div>
-                    <div class="precheck-item {'done' if ctype_done else ''}">
-                        <span class="precheck-dot">✓</span><span>Content type selected</span>
-                    </div>
-                    <div class="precheck-item {'done' if upload_done else ''}">
-                        <span class="precheck-dot">✓</span><span>File uploaded</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            go = st.form_submit_button(
-                "✦  Run full evaluation",
-                use_container_width=True,
-                type="primary"
-            )
-
-        st.markdown('</div>', unsafe_allow_html=True)
+                go = st.form_submit_button(
+                    "✦  Run full evaluation",
+                    use_container_width=True,
+                    type="primary"
+                )
 
         if not go:
             st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
@@ -1787,7 +1788,6 @@ def page_submit():
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # Auto-detect editor comments vs writer replies.
     writer_reply_keywords = [
         "fixed", "done", "added", "removed", "replaced", "updated",
         "changed", "edited", "deleted", "corrected", "revised",
