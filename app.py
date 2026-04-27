@@ -105,6 +105,48 @@ def inject_css():
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#374151;font-size:13px}
     section[data-testid="stSidebar"] > div{padding-top:1.5rem}
 
+    /* ── form card wrapper ── */
+    [data-testid="stForm"]{background:#fff;border-radius:14px;padding:8px;border:1px solid #e8eaf0}
+
+    /* ── inputs ── */
+    [data-testid="stTextInput"] input{border-radius:10px!important;border:1px solid #e8eaf0!important;background:#fff!important;font-size:14px!important;padding:10px 14px!important}
+    [data-testid="stSelectbox"] > div > div{border-radius:10px!important;border:1px solid #e8eaf0!important;background:#fff!important}
+
+    /* ── platform radio → pill toggle ── */
+    [data-testid="stRadio"] > div{display:flex!important;background:#f0f2f9;border-radius:50px;padding:3px;gap:0;width:fit-content}
+    [data-testid="stRadio"] label{border-radius:50px!important;padding:7px 22px!important;font-size:13px!important;font-weight:500!important;cursor:pointer;margin:0!important;border:none!important;transition:all .2s}
+    [data-testid="stRadio"] label:has(input:checked){background:#10b981!important;color:#fff!important}
+    [data-testid="stRadio"] label:not(:has(input:checked)){background:transparent!important;color:#6b7280!important}
+    [data-testid="stRadio"] input{display:none!important}
+    [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important}
+
+    /* ── file uploader → dashed dropzone ── */
+    [data-testid="stFileUploadDropzone"]{background:#fff!important;border:2px dashed #c4b5fd!important;border-radius:12px!important;padding:24px!important}
+    [data-testid="stFileUploadDropzone"] p{color:#6b7280!important;font-size:13px!important}
+    [data-testid="stFileUploadDropzone"] small{color:#9ca3af!important}
+    [data-testid="stFileUploadDropzone"] svg{color:#7c3aed!important}
+    [data-testid="stFileUploadDropzone"] button{background:#7c3aed!important;color:#fff!important;border-radius:50px!important;border:none!important;padding:8px 20px!important;font-weight:500!important}
+
+    /* ── run button → purple gradient pill ── */
+    [data-testid="stFormSubmitButton"] button, .stButton>button{
+        background:linear-gradient(135deg,#4f46e5,#7c3aed)!important;
+        color:#fff!important;border:none!important;
+        border-radius:12px!important;font-size:14px!important;
+        font-weight:600!important;padding:14px!important;
+        letter-spacing:.02em!important;
+        box-shadow:0 4px 15px rgba(124,58,237,.3)!important;
+        transition:all .2s!important}
+    [data-testid="stFormSubmitButton"] button:hover,.stButton>button:hover{
+        background:linear-gradient(135deg,#4338ca,#6d28d9)!important;
+        box-shadow:0 6px 20px rgba(124,58,237,.4)!important}
+
+    /* ── progress bar ── */
+    div[data-testid="stProgress"]>div{background:#7c3aed!important}
+
+    /* ── info box ── */
+    [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
+    [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
+
     /* ── hero banner ── */
     .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 50%,#a855f7 100%);
              border-radius:16px;padding:28px 32px;margin-bottom:1.5rem;
@@ -709,13 +751,6 @@ def page_submit():
         st.markdown("**Platform**")
         platform = st.radio("Platform",PLATFORMS,horizontal=True,label_visibility="collapsed")
         bay = platform=="Bayut"
-        st.markdown(
-            f'<div style="margin-top:-8px;margin-bottom:8px;display:flex;gap:8px">'
-            f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
-            f'background:{"#2e7d32" if bay else "#e8f5e9"};color:{"#fff" if bay else "#2e7d32"}">Bayut</span>'
-            f'<span style="padding:4px 14px;border-radius:20px;font-size:12px;font-weight:500;'
-            f'background:{"#c62828" if not bay else "#fdecea"};color:{"#fff" if not bay else "#c62828"}">Dubizzle</span>'
-            f'</div>',unsafe_allow_html=True)
         upload = st.file_uploader("Upload article file",type=["docx","pdf","txt"],
                     help=".docx recommended — headings, links and editor comments are extracted automatically")
         go = st.form_submit_button("Run full evaluation",use_container_width=True,type="primary")
