@@ -691,6 +691,363 @@ div[class*="stFileUploader"] > label {
 .bdg-bay{background:#d1fae5;color:#065f46}
 .bdg-dub{background:#fee2e2;color:#b91c1c}
 .no-cmt-notice{background:#f0f2f9;border:1px solid #e0e4f0;border-radius:8px;padding:11px 15px;font-size:13px;color:#6b7280;margin-bottom:10px}
+
+/* ─────────────────────────────────────────
+   INTERACTIVE REDESIGN ADDITIONS
+───────────────────────────────────────── */
+.block-container {
+    max-width: 1320px !important;
+    padding-top: 1.8rem !important;
+}
+
+.qa-shell {
+    max-width: 1240px;
+    margin: 0 auto;
+}
+
+.qa-hero {
+    margin-bottom: 24px !important;
+    min-height: 150px !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+.qa-hero::after {
+    content: "";
+    position: absolute;
+    right: 160px;
+    bottom: -60px;
+    width: 520px;
+    height: 220px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.12);
+    transform: rotate(-12deg);
+}
+
+.qa-hero h1 {
+    font-size: 30px !important;
+}
+
+.stepper {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+    align-items: center;
+    gap: 12px;
+    max-width: 760px;
+    margin: 0 auto 24px auto;
+}
+
+.step-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 800;
+    color: #64748b;
+}
+
+.step-num {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid #dbe3ee;
+    background: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 900;
+    color: #111827;
+    box-shadow: 0 4px 10px rgba(15,23,42,.04);
+}
+
+.step-item.active {
+    color: #6d28d9;
+}
+
+.step-item.active .step-num {
+    background: linear-gradient(135deg, #5b5ce2, #7c3aed);
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 10px 22px rgba(109,40,217,.18);
+}
+
+.step-line {
+    height: 1px;
+    border-top: 1px dashed #d6dbe6;
+}
+
+.form-card-panel {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 22px;
+    padding: 26px 28px;
+    box-shadow: 0 18px 42px rgba(17,24,39,.07);
+    margin-bottom: 12px;
+}
+
+.form-card-panel .form-card-header {
+    margin-bottom: 20px !important;
+}
+
+[data-testid="stForm"] hr {
+    margin: 14px 0 !important;
+}
+
+.form-section-divider {
+    height: 1px;
+    background: #e8edf5;
+    margin: 16px 0 14px 0;
+}
+
+/* Make the platform area sit cleanly */
+.platform-row-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 12px 0;
+}
+
+/* Better field spacing */
+[data-testid="stForm"] [data-testid="stTextInput"],
+[data-testid="stForm"] [data-testid="stSelectbox"] {
+    margin-bottom: 8px !important;
+}
+
+.upload-head {
+    margin-top: 0 !important;
+}
+
+/* File card after upload */
+.file-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-top: 12px;
+}
+
+.file-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: #eef2ff;
+    color: #4f46e5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.file-title {
+    font-size: 13px;
+    color: #111827;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.file-meta {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 2px;
+}
+
+.file-status {
+    margin-left: auto;
+    background: #dcfce7;
+    color: #15803d;
+    font-size: 11px;
+    font-weight: 800;
+    border-radius: 999px;
+    padding: 5px 10px;
+    white-space: nowrap;
+}
+
+.precheck {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    background: #fbfcff;
+    border: 1px solid #e5e7eb;
+    border-radius: 13px;
+    padding: 8px 10px;
+    margin-top: 12px;
+}
+
+.precheck-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.precheck-dot {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    color: #94a3b8;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 900;
+}
+
+.precheck-item.done {
+    color: #334155;
+}
+
+.precheck-item.done .precheck-dot {
+    background: #22c55e;
+    color: white;
+}
+
+/* Side panel */
+.side-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 18px;
+    padding: 20px 20px;
+    box-shadow: 0 12px 30px rgba(17,24,39,.055);
+    margin-bottom: 14px;
+}
+
+.side-card-title {
+    font-size: 14px;
+    font-weight: 900;
+    color: #111827;
+    margin-bottom: 14px;
+}
+
+.timeline-row {
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.timeline-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #5b5ce2, #7c3aed);
+    color: white;
+    font-weight: 900;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.timeline-title {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 900;
+    margin-bottom: 2px;
+}
+
+.timeline-sub {
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.preview-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.ring {
+    width: 62px;
+    height: 62px;
+    border-radius: 50%;
+    margin: 0 auto 8px auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+        radial-gradient(circle closest-side, white 72%, transparent 74%),
+        conic-gradient(var(--ring-color) var(--ring-value), #eef2f7 0);
+    color: #111827;
+    font-size: 13px;
+    font-weight: 900;
+}
+
+.preview-label {
+    text-align: center;
+    color: #475569;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.tip-box {
+    background: #ecfdf5;
+    border: 1px solid #d1fae5;
+    color: #065f46;
+    border-radius: 14px;
+    padding: 14px 14px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.tip-title {
+    font-size: 13px;
+    font-weight: 900;
+    margin-bottom: 4px;
+}
+
+.help-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.help-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
+    background: #ede9fe;
+    color: #7c3aed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 900;
+    flex-shrink: 0;
+}
+
+/* Clean right column spacing */
+[data-testid="column"]:last-child .stMarkdown {
+    margin-bottom: 0 !important;
+}
+
+/* Mobile */
+@media (max-width: 1000px) {
+    .stepper {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        max-width: 100%;
+    }
+    .step-line {
+        display: none;
+    }
+    .precheck {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1205,6 +1562,8 @@ def sidebar():
 def page_submit():
     inject_css()
 
+    st.markdown('<div class="qa-shell">', unsafe_allow_html=True)
+
     st.markdown(
         """
 <div class="qa-hero">
@@ -1219,7 +1578,26 @@ def page_submit():
         unsafe_allow_html=True
     )
 
-    with st.container(border=True):
+    st.markdown(
+        """
+<div class="stepper">
+  <div class="step-item active"><span class="step-num">1</span><span>Details</span></div>
+  <div class="step-line"></div>
+  <div class="step-item"><span class="step-num">2</span><span>Upload</span></div>
+  <div class="step-line"></div>
+  <div class="step-item"><span class="step-num">3</span><span>Evaluation</span></div>
+  <div class="step-line"></div>
+  <div class="step-item"><span class="step-num">4</span><span>Report</span></div>
+</div>
+""",
+        unsafe_allow_html=True
+    )
+
+    main_col, side_col = st.columns([3.2, 1.15], gap="large")
+
+    with main_col:
+        st.markdown('<div class="form-card-panel">', unsafe_allow_html=True)
+
         st.markdown(
             """
 <div class="form-card-header">
@@ -1227,7 +1605,7 @@ def page_submit():
     <div class="form-card-title">New submission</div>
     <div class="form-card-sub">Fill in the details below and upload the article file.</div>
   </div>
-  <div class="ready-badge"><span class="ready-dot"></span> Ready</div>
+  <div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div>
 </div>
 """,
             unsafe_allow_html=True
@@ -1242,7 +1620,15 @@ def page_submit():
             ctype = c3.selectbox("Content type", CONTENT_TYPES)
             lang = c4.selectbox("Language", LANGUAGES)
 
-            st.markdown('<span class="platform-label">Platform</span>', unsafe_allow_html=True)
+            st.markdown(
+                """
+                <div class="platform-row-wrap">
+                    <span class="platform-label">Platform</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
             platform = st.radio(
                 "Platform",
                 PLATFORMS,
@@ -1250,6 +1636,8 @@ def page_submit():
                 label_visibility="collapsed",
                 key="platform_choice"
             )
+
+            st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
 
             st.markdown(
                 """
@@ -1267,18 +1655,128 @@ def page_submit():
                 label_visibility="collapsed"
             )
 
+            if upload:
+                size_mb = upload.size / (1024 * 1024)
+                file_ext = upload.name.split(".")[-1].upper() if "." in upload.name else "FILE"
+                st.markdown(
+                    f"""
+                    <div class="file-card">
+                        <div class="file-icon">▤</div>
+                        <div>
+                            <div class="file-title">{upload.name}</div>
+                            <div class="file-meta">{file_ext} • {size_mb:.1f} MB</div>
+                        </div>
+                        <div class="file-status">● File uploaded</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            writer_done = bool(writer.strip())
+            title_done = bool(title.strip())
+            ctype_done = bool(ctype)
+            upload_done = bool(upload)
+
+            st.markdown(
+                f"""
+                <div class="precheck">
+                    <div class="precheck-item {'done' if writer_done else ''}">
+                        <span class="precheck-dot">✓</span><span>Writer name added</span>
+                    </div>
+                    <div class="precheck-item {'done' if title_done else ''}">
+                        <span class="precheck-dot">✓</span><span>Article title added</span>
+                    </div>
+                    <div class="precheck-item {'done' if ctype_done else ''}">
+                        <span class="precheck-dot">✓</span><span>Content type selected</span>
+                    </div>
+                    <div class="precheck-item {'done' if upload_done else ''}">
+                        <span class="precheck-dot">✓</span><span>File uploaded</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
             go = st.form_submit_button(
                 "✦  Run full evaluation",
                 use_container_width=True,
                 type="primary"
             )
 
-    if not go:
-        st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
-        return
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if not go:
+            st.info("Upload a .docx file. Category scores are based entirely on editor comments. If no comments exist, full marks are awarded.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            return
+
+    with side_col:
+        st.markdown(
+            """
+            <div class="side-card">
+                <div class="side-card-title">What happens next?</div>
+                <div class="timeline-row">
+                    <div class="timeline-num">1</div>
+                    <div>
+                        <div class="timeline-title">We analyze your article</div>
+                        <div class="timeline-sub">Checking editor comments, plagiarism and AI content.</div>
+                    </div>
+                </div>
+                <div class="timeline-row">
+                    <div class="timeline-num">2</div>
+                    <div>
+                        <div class="timeline-title">Calculate scores</div>
+                        <div class="timeline-sub">Each category is scored automatically.</div>
+                    </div>
+                </div>
+                <div class="timeline-row" style="margin-bottom:0">
+                    <div class="timeline-num">3</div>
+                    <div>
+                        <div class="timeline-title">Get your report</div>
+                        <div class="timeline-sub">Review results and recommendations.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="side-card">
+                <div class="side-card-title">Evaluation preview</div>
+                <div class="preview-grid">
+                    <div>
+                        <div class="ring" style="--ring-color:#5b5ce2;--ring-value:85%">85</div>
+                        <div class="preview-label">Editor<br>Comments</div>
+                    </div>
+                    <div>
+                        <div class="ring" style="--ring-color:#ef4444;--ring-value:12%">12%</div>
+                        <div class="preview-label">Plagiarism</div>
+                    </div>
+                    <div>
+                        <div class="ring" style="--ring-color:#4f46e5;--ring-value:8%">8%</div>
+                        <div class="preview-label">AI Content</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="side-card">
+                <div class="tip-box">
+                    <div class="tip-title">Tip</div>
+                    <div>Ensure your article is final and complete for accurate evaluation.</div>
+                </div>
+            </div>
+
+            <div class="side-card help-box">
+                <div>
+                    <div class="side-card-title" style="margin-bottom:5px">Need help?</div>
+                    <div class="timeline-sub">Click the help icon next to any field for more information.</div>
+                </div>
+                <div class="help-icon">⌕</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
     if not writer or not title or not upload:
         st.error("Please fill in writer name, title and upload a file.")
+        st.markdown('</div>', unsafe_allow_html=True)
         return
 
     with st.spinner("Reading file..."):
@@ -1286,6 +1784,7 @@ def page_submit():
 
     if not parsed["text"] or len(parsed["text"]) < 30:
         st.error(f"Could not read text from file. {parsed.get('error','')}")
+        st.markdown('</div>', unsafe_allow_html=True)
         return
 
     # Auto-detect editor comments vs writer replies.
@@ -1343,7 +1842,7 @@ def page_submit():
     prog = st.progress(0, text="Starting...")
 
     try:
-        prog.progress(15, text="Scoring categories from editor comments...")
+        prog.progress(15, text="Reading document and extracting editor comments...")
         qa = run_qa(
             title,
             parsed["text"],
@@ -1358,16 +1857,17 @@ def page_submit():
     except Exception as e:
         st.error(f"AI evaluation failed: {e}")
         st.info("Make sure GROQ_API_KEY is set in Streamlit Secrets.")
+        st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    prog.progress(50, text="Running plagiarism check...")
+    prog.progress(50, text="Checking plagiarism...")
     plag = check_plagiarism(parsed["text"], parsed["links"])
     plag_sources, plag_snippets = get_plag_snippets(parsed["text"], parsed["links"], plag)
 
-    prog.progress(72, text="Running AI detection...")
+    prog.progress(72, text="Checking AI-generated content...")
     ai = check_ai(parsed["text"])
 
-    prog.progress(95, text="Calculating final score...")
+    prog.progress(95, text="Calculating final score and recommendation...")
     base_score = qa.get("total", 0)
     final_score, deductions = apply_deductions(
         base_score,
@@ -1375,9 +1875,10 @@ def page_submit():
         plag["percentage"],
         ai["ai_pct"]
     )
+
     recommendation = get_recommendation(final_score)
 
-    prog.progress(100, text="Done!")
+    prog.progress(100, text="Evaluation completed.")
     prog.empty()
 
     sub = {
@@ -1409,7 +1910,10 @@ def page_submit():
         st.session_state.submissions = []
 
     st.session_state.submissions.append(sub)
+    st.success(f"Evaluation completed successfully. Final score: {final_score} / 100")
     render_report(sub)
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ── report ─────────────────────────────────────────────────────────────────
 def render_report(sub):
