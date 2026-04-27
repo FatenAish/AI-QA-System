@@ -733,11 +733,11 @@ div[class*="stFileUploader"] > label {
 .stepper {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: center;
     gap: 14px;
     width: 100%;
-    margin: 0 0 24px 0;
-    padding-left: 4px;
+    max-width: 760px;
+    margin: 0 auto 24px auto;
     flex-wrap: nowrap;
 }
 
@@ -1604,8 +1604,11 @@ def page_submit():
         unsafe_allow_html=True
     )
 
-    st.markdown(
-        """
+    main_col, side_col = st.columns([3.1, 1.05], gap="large")
+
+    with main_col:
+        st.markdown(
+            """
 <div class="stepper">
   <div class="step-item active"><span class="step-num">1</span><span>Details</span></div>
   <div class="step-line"></div>
@@ -1616,12 +1619,8 @@ def page_submit():
   <div class="step-item"><span class="step-num">4</span><span>Report</span></div>
 </div>
 """,
-        unsafe_allow_html=True
-    )
-
-    main_col, side_col = st.columns([3.1, 1.05], gap="large")
-
-    with main_col:
+            unsafe_allow_html=True
+        )
         with st.container(border=True):
             st.markdown(
                 """
