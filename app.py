@@ -101,160 +101,201 @@ KNOWN_DOMAINS = [
 def inject_css():
     st.markdown("""
 <style>
-/* ── App layout ───────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   GLOBAL LAYOUT
+───────────────────────────────────────── */
 .stApp {
-    background: #f5f6fb;
-}
-
-[data-testid="stAppViewContainer"] > .main {
     background: #f5f6fb;
 }
 
 .block-container {
     max-width: 920px;
-    padding-top: 2.2rem;
+    padding-top: 2rem;
     padding-bottom: 3rem;
 }
 
-/* ── Sidebar ──────────────────────────────────────────────────────────── */
+/* Make Streamlit containers look like modern cards */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border: 1px solid #e5e7eb !important;
+    border-radius: 20px !important;
+    box-shadow: 0 14px 35px rgba(17,24,39,.06) !important;
+    background: #fff !important;
+}
+
+[data-testid="stForm"] {
+    border: none !important;
+    padding: 0 !important;
+    background: transparent !important;
+}
+
+/* ─────────────────────────────────────────
+   SIDEBAR
+───────────────────────────────────────── */
 [data-testid="stSidebar"] {
     background: #ffffff !important;
-    border-right: 1px solid #e5e7eb;
+    border-right: 1px solid #e5e7eb !important;
 }
 
 section[data-testid="stSidebar"] > div {
-    padding: 1.2rem 0.85rem;
+    padding: 0 !important;
 }
 
-.sidebar-logo {
+.sb-brand {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 8px 18px;
+    padding: 22px 18px 18px 18px;
+    border-bottom: 1px solid #e5e7eb;
 }
 
-.sidebar-icon {
+.sb-brand-icon {
     width: 34px;
     height: 34px;
     border-radius: 50%;
-    background: linear-gradient(135deg, #4f46e5, #9333ea);
-    color: #fff;
+    background: linear-gradient(135deg, #5b5ce2, #7c3aed);
     display: flex;
     align-items: center;
     justify-content: center;
+    color: white;
     font-size: 15px;
     font-weight: 800;
+    flex-shrink: 0;
 }
 
-.sidebar-title {
+.sb-brand-title {
     font-size: 13px;
     font-weight: 800;
     color: #111827;
     line-height: 1.2;
 }
 
-.sidebar-subtitle {
+.sb-brand-sub {
     font-size: 11px;
     color: #9ca3af;
+    margin-top: 2px;
 }
 
-.sidebar-section-title {
+.sb-section {
     font-size: 10px;
     color: #9ca3af;
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: .08em;
-    margin: 20px 8px 8px;
+    margin: 17px 18px 8px 18px;
 }
 
 /* Sidebar radio navigation */
-section[data-testid="stSidebar"] [data-testid="stRadio"] label {
+section[data-testid="stSidebar"] [data-testid="stRadio"] {
+    padding: 0 14px !important;
+}
+
+section[data-testid="stSidebar"] [role="radiogroup"] {
+    gap: 6px !important;
+}
+
+section[data-testid="stSidebar"] [role="radiogroup"] label {
+    border-radius: 12px !important;
+    padding: 10px 12px !important;
+    margin: 0 0 5px 0 !important;
     background: transparent !important;
-    border-radius: 11px !important;
-    padding: 8px 10px !important;
-    margin-bottom: 4px !important;
-    color: #4b5563 !important;
+    color: #374151 !important;
     font-size: 13px !important;
     font-weight: 600 !important;
 }
 
-section[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-    background: #f3f0ff !important;
+section[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    background: #f3f4f6 !important;
+}
+
+section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background: #eeebff !important;
     color: #4f46e5 !important;
+    font-weight: 800 !important;
+    box-shadow: 0 6px 14px rgba(79,70,229,.08) !important;
 }
 
-section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {
-    gap: 2px !important;
+/* Hide the default radio circle */
+section[data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
+    font-size: 13px !important;
 }
 
-.deduction-card {
-    border: 1px solid #e5e7eb;
-    border-radius: 14px;
-    overflow: hidden;
+section[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+
+.sb-deduction-wrap {
+    padding: 0 14px 0 14px;
+}
+
+.sb-deduction-card {
     background: #fff;
-    margin: 8px 6px 0;
+    border: 1px solid #dfe4ea;
+    border-radius: 16px;
+    overflow: hidden;
 }
 
-.deduction-row {
+.sb-deduction-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 9px 12px;
-    border-bottom: 1px solid #f3f4f6;
+    justify-content: space-between;
+    padding: 11px 13px;
+    border-bottom: 1px solid #eef2f7;
     font-size: 12px;
     color: #374151;
 }
 
-.deduction-row:last-child {
+.sb-deduction-row:last-child {
     border-bottom: none;
 }
 
-.deduction-pill {
+.sb-pill {
     background: #fee2e2;
     color: #ef4444;
     font-size: 11px;
     font-weight: 800;
-    padding: 2px 9px;
     border-radius: 999px;
+    padding: 2px 9px;
+    line-height: 1.3;
 }
 
-/* ── Hero ─────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   HERO
+───────────────────────────────────────── */
 .qa-hero {
-    background: linear-gradient(135deg, #4338ca 0%, #7c3aed 55%, #c056d9 100%);
-    border-radius: 20px;
-    padding: 30px 34px;
-    margin-bottom: 26px;
+    background: linear-gradient(135deg, #4839d8 0%, #7c3aed 55%, #d067da 100%);
+    border-radius: 22px;
+    padding: 30px 32px;
+    margin-bottom: 24px;
     color: #fff;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    box-shadow: 0 18px 35px rgba(79, 70, 229, .20);
+    box-shadow: 0 18px 35px rgba(79,70,229,.18);
 }
 
 .qa-hero-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(255,255,255,.18);
+    display: inline-block;
+    background: rgba(255,255,255,.16);
+    color: #fff;
     border-radius: 999px;
     padding: 5px 12px;
     font-size: 11px;
     font-weight: 800;
-    margin-bottom: 14px;
+    margin-bottom: 12px;
 }
 
 .qa-hero h1 {
     font-size: 28px;
-    font-weight: 850;
+    font-weight: 900;
+    margin: 0 0 10px 0;
     color: #fff;
-    margin: 0 0 10px;
     line-height: 1.15;
 }
 
 .qa-hero p {
     font-size: 13px;
-    color: rgba(255,255,255,.88);
     line-height: 1.6;
+    color: rgba(255,255,255,.88);
     margin: 0;
     max-width: 520px;
 }
@@ -262,39 +303,31 @@ section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] 
 .qa-hero-icon {
     width: 66px;
     height: 66px;
-    background: rgba(255,255,255,.14);
-    border: 1px solid rgba(255,255,255,.20);
     border-radius: 18px;
+    background: rgba(255,255,255,.12);
+    border: 1px solid rgba(255,255,255,.15);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 30px;
+    font-size: 28px;
+    flex-shrink: 0;
 }
 
-/* ── Form card ────────────────────────────────────────────────────────── */
-[data-testid="stVerticalBlockBorderWrapper"] {
-    background: #ffffff !important;
-    border: 1px solid #e5e7eb !important;
-    border-radius: 20px !important;
-    box-shadow: 0 14px 35px rgba(17, 24, 39, .06) !important;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] > div {
-    padding: 22px 24px !important;
-}
-
+/* ─────────────────────────────────────────
+   FORM CARD
+───────────────────────────────────────── */
 .form-card-header {
     display: flex;
-    justify-content: space-between;
     align-items: flex-start;
-    margin-bottom: 18px;
+    justify-content: space-between;
+    margin-bottom: 20px;
 }
 
 .form-card-title {
     font-size: 16px;
-    font-weight: 850;
+    font-weight: 900;
     color: #111827;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
 }
 
 .form-card-sub {
@@ -312,6 +345,7 @@ section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] 
     font-weight: 800;
     padding: 5px 11px;
     border-radius: 999px;
+    white-space: nowrap;
 }
 
 .ready-dot {
@@ -319,86 +353,75 @@ section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] 
     height: 6px;
     border-radius: 50%;
     background: #16a34a;
+    display: inline-block;
 }
 
-/* Streamlit form reset */
-[data-testid="stForm"] {
-    border: none !important;
-    padding: 0 !important;
-    background: transparent !important;
-}
-
-/* Inputs */
-div[class*="stTextInput"] label,
-div[class*="stSelectbox"] label,
-div[class*="stFileUploader"] label,
-[data-testid="stRadio"] label {
-    font-size: 12px !important;
-    font-weight: 750 !important;
-    color: #374151 !important;
-}
-
-[data-testid="stTextInput"] input {
-    border-radius: 11px !important;
-    border: 1px solid #dbe0ea !important;
-    padding: 10px 13px !important;
-    font-size: 13px !important;
-    background: #fff !important;
-    box-shadow: none !important;
-    color: #111827 !important;
-}
-
-[data-testid="stTextInput"] input::placeholder {
-    color: #9ca3af !important;
-}
-
-[data-testid="stTextInput"] input:focus {
-    border-color: #8b5cf6 !important;
-    box-shadow: 0 0 0 3px rgba(139, 92, 246, .12) !important;
-}
-
-[data-baseweb="select"] > div {
-    border-radius: 11px !important;
-    border: 1px solid #dbe0ea !important;
-    font-size: 13px !important;
-    min-height: 42px !important;
-    box-shadow: none !important;
-    background: #ffffff !important;
-}
-
-/* Platform radio */
 .platform-label {
     font-size: 12px;
     font-weight: 800;
     color: #374151;
-    margin: 8px 0 4px;
+    margin-bottom: 6px;
 }
 
-div[data-testid="stRadio"] div[role="radiogroup"] {
-    display: flex;
-    gap: 8px;
+/* Inputs */
+div[class*="stTextInput"] > label,
+div[class*="stSelectbox"] > label,
+div[class*="stFileUploader"] > label {
+    font-size: 12px !important;
+    font-weight: 800 !important;
+    color: #374151 !important;
+    margin-bottom: 6px !important;
 }
 
-div[data-testid="stRadio"] input {
-    display: none;
+[data-testid="stTextInput"] input {
+    border-radius: 12px !important;
+    border: 1px solid #d9e0ea !important;
+    padding: 10px 13px !important;
+    font-size: 13px !important;
+    background: #fff !important;
+    box-shadow: none !important;
 }
 
-div[data-testid="stRadio"] label {
-    border-radius: 999px !important;
+[data-testid="stTextInput"] input:focus {
+    border-color: #8b5cf6 !important;
+    box-shadow: 0 0 0 3px rgba(139,92,246,.10) !important;
+}
+
+[data-baseweb="select"] > div {
+    border-radius: 12px !important;
+    border: 1px solid #d9e0ea !important;
+    min-height: 42px !important;
+    box-shadow: none !important;
+}
+
+/* Platform radio pills inside the form */
+div[role="radiogroup"] {
+    gap: 8px !important;
+}
+
+div[role="radiogroup"] label {
     background: #f1f5f9 !important;
+    color: #64748b !important;
     border: 1px solid #e2e8f0 !important;
+    border-radius: 999px !important;
     padding: 8px 18px !important;
-    min-width: 84px;
-    justify-content: center;
+    font-size: 12px !important;
+    font-weight: 800 !important;
 }
 
-div[data-testid="stRadio"] label:has(input:checked) {
+div[role="radiogroup"] label:has(input:checked) {
     background: #10b981 !important;
-    color: #ffffff !important;
+    color: #fff !important;
     border-color: #10b981 !important;
 }
 
-/* Upload dropzone */
+div[role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+
+/* ─────────────────────────────────────────
+   FILE UPLOADER - CENTER CONTENT
+───────────────────────────────────────── */
 [data-testid="stFileUploadDropzone"] {
     min-height: 150px !important;
     border: 1.5px dashed #d8deea !important;
@@ -407,6 +430,7 @@ div[data-testid="stRadio"] label:has(input:checked) {
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
+    padding: 18px !important;
 }
 
 [data-testid="stFileUploadDropzone"]:hover {
@@ -414,31 +438,62 @@ div[data-testid="stRadio"] label:has(input:checked) {
     background: #faf5ff !important;
 }
 
+[data-testid="stFileUploadDropzone"] > div {
+    width: 100% !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+}
+
 [data-testid="stFileUploaderDropzoneInstructions"] {
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    gap: 8px !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] > div {
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
     text-align: center !important;
 }
 
-[data-testid="stFileUploaderDropzoneInstructions"] svg {
-    color: #7c3aed !important;
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] small,
+[data-testid="stFileUploaderDropzoneInstructions"] p {
+    text-align: center !important;
+    width: 100% !important;
 }
 
-/* Submit button */
+[data-testid="stFileUploaderDropzoneInstructions"] button,
+[data-testid="stFileUploadDropzone"] button {
+    margin: 0 auto 6px auto !important;
+    display: block !important;
+    border-radius: 12px !important;
+    padding: 10px 18px !important;
+    font-size: 13px !important;
+    font-weight: 800 !important;
+    border: 1px solid #d1d5db !important;
+    background: white !important;
+}
+
+/* Main action button */
 [data-testid="stFormSubmitButton"] button {
     background: linear-gradient(135deg, #4338ca, #7c3aed) !important;
-    color: #fff !important;
+    color: white !important;
     border: none !important;
-    border-radius: 11px !important;
+    border-radius: 12px !important;
     font-size: 14px !important;
-    font-weight: 850 !important;
+    font-weight: 900 !important;
     padding: 12px !important;
     width: 100% !important;
-    box-shadow: 0 10px 24px rgba(124, 58, 237, .22) !important;
-    margin-top: 8px !important;
-}
-
-[data-testid="stFormSubmitButton"] button:hover {
-    filter: brightness(1.04);
-    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(124,58,237,.18) !important;
 }
 
 [data-testid="stAlert"] {
@@ -452,7 +507,9 @@ div[data-testid="stRadio"] label:has(input:checked) {
     font-size: 12px !important;
 }
 
-/* ── Report styles ────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   REPORT STYLES
+───────────────────────────────────────── */
 .score-hero{background:#fff;border:1px solid #e8eaf0;border-radius:14px;padding:22px 26px;margin-bottom:1rem}
 .score-num{font-size:54px;font-weight:700;color:#4f46e5;line-height:1}
 .score-den{font-size:17px;font-weight:400;color:#9ca3af}
@@ -463,6 +520,7 @@ div[data-testid="stRadio"] label:has(input:checked) {
 .base-row{display:flex;justify-content:space-between;padding:5px 0;color:#374151;border-bottom:1px solid #f3f4f6}
 .ok-row{display:flex;justify-content:space-between;padding:5px 0;color:#9ca3af;border-bottom:1px solid #f3f4f6;font-size:12px}
 .total-row{display:flex;justify-content:space-between;padding:7px 0 2px;font-weight:700;font-size:14px;color:#111827;border-top:2px solid #e8eaf0;margin-top:3px}
+
 .detect-card{border:1px solid #e8eaf0;border-radius:12px;padding:15px 17px;background:#fff}
 .detect-title{font-size:13px;font-weight:600;color:#111827;margin-bottom:7px}
 .detect-bar{height:5px;background:#f3f4f6;border-radius:3px;margin-bottom:9px}
@@ -477,14 +535,17 @@ div[data-testid="stRadio"] label:has(input:checked) {
 .issue-block-title{font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
 .issue-snippet{background:#fff;border-left:3px solid #f59e0b;padding:5px 9px;margin-bottom:4px;border-radius:0 6px 6px 0;font-size:11px;color:#374151;line-height:1.5;font-style:italic}
 .issue-snippet:last-child{margin-bottom:0}
+
 .cmt-card{background:#f0f2f9;border-left:3px solid #4f46e5;padding:9px 13px;margin-bottom:7px;border-radius:0 8px 8px 0;font-size:13px}
 .cmt-author{font-weight:600;color:#4f46e5}
 .cmt-deduct{font-size:11px;color:#dc2626;font-weight:500;margin-top:3px}
 .cat-ref{font-size:10px;font-weight:500;padding:2px 7px;border-radius:20px;background:#ede9fe;color:#4f46e5;margin-left:6px}
+
 .suggest-item{display:flex;gap:11px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
 .suggest-item:last-child{border:none;padding-bottom:0}
 .suggest-num{width:22px;height:22px;border-radius:50%;background:#ede9fe;color:#4f46e5;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
 .suggest-cat{font-size:11px;color:#9ca3af;margin-top:2px}
+
 .tag-str{background:#d1fae5;color:#065f46;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
 .tag-imp{background:#fef3c7;color:#92400e;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
 .bdg{font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px}
@@ -958,35 +1019,48 @@ def log_to_sheets(row):
 def sidebar():
     with st.sidebar:
         st.markdown("""
-<div class="sidebar-logo">
-  <div class="sidebar-icon">✦</div>
-  <div>
-    <div class="sidebar-title">Content QA</div>
-    <div class="sidebar-subtitle">Editorial review</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+        <div class="sb-brand">
+            <div class="sb-brand-icon">✦</div>
+            <div>
+                <div class="sb-brand-title">Content QA</div>
+                <div class="sb-brand-sub">Editorial review</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        st.markdown('<div class="sidebar-section-title">Navigation</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
 
         page = st.radio(
-            "Go to",
-            ["▣  Submit article", "⌘  Dashboard"],
-            label_visibility="collapsed"
+            "Navigation",
+            ["📄  Submit article", "◫  Dashboard"],
+            label_visibility="collapsed",
+            key="sidebar_navigation"
         )
 
-        st.markdown('<div class="sidebar-section-title">Deduction rules</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
 
         st.markdown("""
-<div class="deduction-card">
-  <div class="deduction-row"><span>Per editor comment</span><span class="deduction-pill">-1</span></div>
-  <div class="deduction-row"><span>Plagiarism over 20%</span><span class="deduction-pill">-5</span></div>
-  <div class="deduction-row"><span>AI content over 20%</span><span class="deduction-pill">-5</span></div>
-</div>
-""", unsafe_allow_html=True)
+        <div class="sb-deduction-wrap">
+            <div class="sb-deduction-card">
+                <div class="sb-deduction-row">
+                    <span>Per editor comment</span>
+                    <span class="sb-pill">-1</span>
+                </div>
+                <div class="sb-deduction-row">
+                    <span>Plagiarism over 20%</span>
+                    <span class="sb-pill">-5</span>
+                </div>
+                <div class="sb-deduction-row">
+                    <span>AI content over 20%</span>
+                    <span class="sb-pill">-5</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        return "Submit article" if "Submit" in page else "Dashboard"
-
+        if "Dashboard" in page:
+            return "Dashboard"
+        return "Submit article"
 
 # ── submit page ────────────────────────────────────────────────────────────
 def page_submit():
