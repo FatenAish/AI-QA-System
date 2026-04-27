@@ -394,28 +394,74 @@ div[class*="stFileUploader"] > label {
     box-shadow: none !important;
 }
 
-/* Platform radio pills inside the form */
-div[role="radiogroup"] {
-    gap: 8px !important;
+/* Platform segmented buttons */
+.platform-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #374151;
+    margin: 0 10px 0 0;
+    display: inline-flex;
+    align-items: center;
 }
 
-div[role="radiogroup"] label {
+/* Make platform label and radio sit on the same line */
+[data-testid="stForm"] div[data-testid="stMarkdownContainer"]:has(.platform-label) {
+    display: inline-block !important;
+    vertical-align: middle !important;
+    margin-right: 8px !important;
+}
+
+/* Radio group container */
+[data-testid="stForm"] div[role="radiogroup"] {
+    display: inline-flex !important;
+    flex-direction: row !important;
+    gap: 0 !important;
     background: #f1f5f9 !important;
-    color: #64748b !important;
-    border: 1px solid #e2e8f0 !important;
+    border: 1px solid #dbe3ee !important;
     border-radius: 999px !important;
-    padding: 8px 18px !important;
+    padding: 3px !important;
+    width: fit-content !important;
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, .03) !important;
+}
+
+/* Each platform option */
+[data-testid="stForm"] div[role="radiogroup"] label {
+    margin: 0 !important;
+    min-height: 32px !important;
+    min-width: 76px !important;
+    padding: 7px 17px !important;
+    border-radius: 999px !important;
+    border: none !important;
+    background: transparent !important;
+    color: #64748b !important;
     font-size: 12px !important;
-    font-weight: 800 !important;
+    font-weight: 700 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: none !important;
 }
 
-div[role="radiogroup"] label:has(input:checked) {
+/* Selected platform */
+[data-testid="stForm"] div[role="radiogroup"] label:has(input:checked) {
     background: #10b981 !important;
-    color: #fff !important;
-    border-color: #10b981 !important;
+    color: #ffffff !important;
+    box-shadow: 0 6px 13px rgba(16, 185, 129, .25) !important;
 }
 
-div[role="radiogroup"] label > div:first-child {
+/* Hide default radio circles */
+[data-testid="stForm"] div[role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+
+/* Remove extra spacing around platform radio */
+[data-testid="stForm"] div[data-testid="stRadio"] {
+    display: inline-block !important;
+    vertical-align: middle !important;
+    margin-bottom: 14px !important;
+}
+
+[data-testid="stForm"] div[data-testid="stRadio"] > label {
     display: none !important;
 }
 
@@ -1196,7 +1242,7 @@ def page_submit():
             ctype = c3.selectbox("Content type", CONTENT_TYPES)
             lang = c4.selectbox("Language", LANGUAGES)
 
-            st.markdown('<div class="platform-label">Platform</div>', unsafe_allow_html=True)
+            st.markdown('<span class="platform-label">Platform</span>', unsafe_allow_html=True)
             platform = st.radio(
                 "Platform",
                 PLATFORMS,
