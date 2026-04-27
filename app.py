@@ -32,7 +32,7 @@ try:
 except ImportError:
     SHEETS_OK = False
 
-st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",
+st.set_page_config(page_title="Content QA System", page_icon="Q", layout="centered",
                    initial_sidebar_state="expanded")
 
 PLATFORMS     = ["Bayut", "Dubizzle"]
@@ -99,73 +99,94 @@ KNOWN_DOMAINS = [
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
     st.markdown("""<style>
-    [data-testid="stAppViewContainer"]{background:#f0f2f9}
+    /* global */
+    [data-testid="stAppViewContainer"] > .main {background:#f0f2f9}
     [data-testid="stSidebar"]{background:#ffffff!important;border-right:1px solid #e8eaf0}
-    section[data-testid="stSidebar"] > div{padding-top:1.5rem}
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{font-size:13px;color:#374151}
+    [data-testid="stSidebar"] h3{font-size:11px!important;font-weight:600!important;color:#9ca3af!important;text-transform:uppercase!important;letter-spacing:.08em!important}
+    section[data-testid="stSidebar"] > div{padding-top:1rem}
 
-    .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#a855f7 100%);
-             border-radius:16px;padding:28px 32px;margin-bottom:1.5rem;color:#fff;
-             display:flex;align-items:center;justify-content:space-between}
-    .qa-hero-badge{background:rgba(255,255,255,.2);border-radius:20px;padding:4px 12px;
-                   font-size:11px;font-weight:500;color:#fff;margin-bottom:10px;display:inline-block}
-    .qa-hero h1{font-size:26px;font-weight:700;color:#fff;margin:6px 0 8px}
-    .qa-hero p{font-size:13px;color:rgba(255,255,255,.85);line-height:1.6;margin:0}
-    .qa-hero-icon{width:56px;height:56px;background:rgba(255,255,255,.15);border-radius:14px;
-                  display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0}
+    /* hero */
+    .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 55%,#a855f7 100%);border-radius:16px;padding:28px 30px;margin-bottom:1.4rem;color:#fff;display:flex;align-items:flex-start;justify-content:space-between}
+    .qa-hero-badge{background:rgba(255,255,255,.2);border-radius:20px;padding:4px 12px;font-size:11px;font-weight:500;color:#fff;margin-bottom:10px;display:inline-block}
+    .qa-hero h1{font-size:24px;font-weight:700;color:#fff;margin:5px 0 8px;line-height:1.2}
+    .qa-hero p{font-size:12px;color:rgba(255,255,255,.82);line-height:1.6;margin:0;max-width:340px}
+    .qa-hero-icon{width:52px;height:52px;background:rgba(255,255,255,.15);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
 
-    .score-hero{background:#fff;border:1px solid #e8eaf0;border-radius:14px;padding:24px 28px;margin-bottom:1rem}
-    .score-num{font-size:56px;font-weight:700;color:#4f46e5;line-height:1}
-    .score-den{font-size:18px;font-weight:400;color:#9ca3af}
-    .score-grade{font-size:14px;font-weight:600;margin-top:6px;color:#4f46e5}
+    /* form card */
+    .form-card{background:#fff;border-radius:14px;padding:22px 26px;border:1px solid #e8eaf0;margin-bottom:1rem}
+    .form-card-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid #f3f4f6}
+    .form-card-title{font-size:15px;font-weight:600;color:#111827;margin-bottom:3px}
+    .form-card-sub{font-size:12px;color:#9ca3af}
+    .ready-badge{background:#dcfce7;color:#15803d;font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px;display:flex;align-items:center;gap:4px;white-space:nowrap}
+    .ready-dot{width:6px;height:6px;border-radius:50%;background:#16a34a;display:inline-block}
+
+    /* platform pills */
+    .plat-wrap{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .plat-lbl{font-size:13px;color:#374151;font-weight:500}
+    .plat-pills{display:flex;background:#f3f4f6;border-radius:50px;padding:3px;gap:2px}
+    .pill-bay-on{background:#10b981;color:#fff;border-radius:50px;padding:6px 20px;font-size:13px;font-weight:500;border:none;cursor:pointer}
+    .pill-off{background:transparent;color:#9ca3af;border-radius:50px;padding:6px 20px;font-size:13px;font-weight:500;border:none;cursor:pointer}
+
+    /* score */
+    .score-hero{background:#fff;border:1px solid #e8eaf0;border-radius:14px;padding:22px 26px;margin-bottom:1rem}
+    .score-num{font-size:54px;font-weight:700;color:#4f46e5;line-height:1}
+    .score-den{font-size:17px;font-weight:400;color:#9ca3af}
+    .score-grade{font-size:13px;font-weight:600;margin-top:5px;color:#4f46e5}
     .score-verdict{font-size:13px;color:#6b7280;line-height:1.65;margin-top:10px}
-    .breakdown-box{background:#f9fafb;border:1px solid #e8eaf0;border-radius:10px;padding:14px 16px;margin-top:14px;font-size:13px}
+    .breakdown-box{background:#f9fafb;border:1px solid #e8eaf0;border-radius:10px;padding:13px 15px;margin-top:13px;font-size:13px}
     .ded-row{display:flex;justify-content:space-between;padding:5px 0;color:#dc2626;border-bottom:1px solid #fee2e2}
     .base-row{display:flex;justify-content:space-between;padding:5px 0;color:#374151;border-bottom:1px solid #f3f4f6}
     .ok-row{display:flex;justify-content:space-between;padding:5px 0;color:#9ca3af;border-bottom:1px solid #f3f4f6;font-size:12px}
-    .total-row{display:flex;justify-content:space-between;padding:8px 0 2px;font-weight:700;font-size:14px;color:#111827;border-top:2px solid #e8eaf0;margin-top:4px}
+    .total-row{display:flex;justify-content:space-between;padding:7px 0 2px;font-weight:700;font-size:14px;color:#111827;border-top:2px solid #e8eaf0;margin-top:3px}
 
-    .detect-card{border:1px solid #e8eaf0;border-radius:12px;padding:16px 18px;background:#fff}
-    .detect-title{font-size:13px;font-weight:600;color:#111827;margin-bottom:8px}
-    .detect-bar{height:6px;background:#f3f4f6;border-radius:3px;margin-bottom:10px}
+    /* detect */
+    .detect-card{border:1px solid #e8eaf0;border-radius:12px;padding:15px 17px;background:#fff}
+    .detect-title{font-size:13px;font-weight:600;color:#111827;margin-bottom:7px}
+    .detect-bar{height:5px;background:#f3f4f6;border-radius:3px;margin-bottom:9px}
     .detect-bar-f{height:100%;border-radius:3px}
-    .detect-thresh{font-size:12px;font-weight:500;padding:5px 12px;border-radius:8px;display:inline-block;margin-bottom:10px}
+    .detect-thresh{font-size:11px;font-weight:500;padding:4px 10px;border-radius:8px;display:inline-block;margin-bottom:9px}
     .detect-note{font-size:12px;color:#6b7280;line-height:1.6}
-    .detect-split{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-    .detect-seg{text-align:center;background:#f9fafb;border-radius:8px;padding:8px}
-    .detect-seg-n{font-size:15px;font-weight:600}
-    .detect-seg-l{font-size:11px;color:#9ca3af;margin-top:2px}
-    .issue-block{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px}
-    .issue-block-title{font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
-    .issue-snippet{background:#fff;border-left:3px solid #f59e0b;padding:6px 10px;margin-bottom:5px;border-radius:0 6px 6px 0;font-size:12px;color:#374151;line-height:1.55;font-style:italic}
+    .detect-split{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+    .detect-seg{text-align:center;background:#f9fafb;border-radius:8px;padding:7px}
+    .detect-seg-n{font-size:14px;font-weight:600}
+    .detect-seg-l{font-size:10px;color:#9ca3af;margin-top:2px}
+    .issue-block{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;margin-top:9px}
+    .issue-block-title{font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+    .issue-snippet{background:#fff;border-left:3px solid #f59e0b;padding:5px 9px;margin-bottom:4px;border-radius:0 6px 6px 0;font-size:11px;color:#374151;line-height:1.5;font-style:italic}
     .issue-snippet:last-child{margin-bottom:0}
 
-    .cmt-card{background:#f0f2f9;border-left:3px solid #4f46e5;padding:10px 14px;margin-bottom:8px;border-radius:0 8px 8px 0;font-size:13px}
+    /* comments */
+    .cmt-card{background:#f0f2f9;border-left:3px solid #4f46e5;padding:9px 13px;margin-bottom:7px;border-radius:0 8px 8px 0;font-size:13px}
     .cmt-author{font-weight:600;color:#4f46e5}
     .cmt-deduct{font-size:11px;color:#dc2626;font-weight:500;margin-top:3px}
-    .cat-ref{font-size:10px;font-weight:500;padding:2px 8px;border-radius:20px;background:#ede9fe;color:#4f46e5;margin-left:6px}
+    .cat-ref{font-size:10px;font-weight:500;padding:2px 7px;border-radius:20px;background:#ede9fe;color:#4f46e5;margin-left:6px}
 
-    .suggest-item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
+    /* suggestions */
+    .suggest-item{display:flex;gap:11px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
     .suggest-item:last-child{border:none;padding-bottom:0}
-    .suggest-num{width:24px;height:24px;border-radius:50%;background:#ede9fe;color:#4f46e5;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
-    .suggest-cat{font-size:11px;color:#9ca3af;margin-top:3px}
+    .suggest-num{width:22px;height:22px;border-radius:50%;background:#ede9fe;color:#4f46e5;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+    .suggest-cat{font-size:11px;color:#9ca3af;margin-top:2px}
 
-    .tag-str{background:#d1fae5;color:#065f46;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
-    .tag-imp{background:#fef3c7;color:#92400e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
+    /* tags */
+    .tag-str{background:#d1fae5;color:#065f46;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
+    .tag-imp{background:#fef3c7;color:#92400e;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
     .bdg{font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px}
     .bdg-bay{background:#d1fae5;color:#065f46}
     .bdg-dub{background:#fee2e2;color:#b91c1c}
-    .no-cmt-notice{background:#f0f2f9;border:1px solid #e0e4f0;border-radius:8px;padding:12px 16px;font-size:13px;color:#6b7280;margin-bottom:10px}
+    .no-cmt-notice{background:#f0f2f9;border:1px solid #e0e4f0;border-radius:8px;padding:11px 15px;font-size:13px;color:#6b7280;margin-bottom:10px}
 
+    /* streamlit overrides */
     div[data-testid="stProgress"]>div{background:#7c3aed!important}
-
     [data-testid="stFormSubmitButton"] button{
-        background:linear-gradient(135deg,#4f46e5,#7c3aed)!important;
-        color:#fff!important;border:none!important;border-radius:12px!important;
-        font-size:14px!important;font-weight:600!important;padding:14px!important;
-        letter-spacing:.02em!important;width:100%!important}
-
+        background:linear-gradient(135deg,#3730a3,#6d28d9)!important;
+        color:#fff!important;border:none!important;border-radius:10px!important;
+        font-size:14px!important;font-weight:600!important;padding:13px!important;width:100%!important}
     [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
     [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
+    [data-testid="stFileUploadDropzone"]{background:#f8f7ff!important;border:1.5px dashed #c4b5fd!important;border-radius:12px!important}
+    [data-testid="stTextInput"] input{border-radius:8px!important;border:1px solid #e5e7eb!important}
+    [data-testid="stSelectbox"] > div > div{border-radius:8px!important;border:1px solid #e5e7eb!important}
     </style>""", unsafe_allow_html=True)
 
 
@@ -631,41 +652,23 @@ def log_to_sheets(row):
 # ── sidebar ────────────────────────────────────────────────────────────────
 def sidebar():
     with st.sidebar:
-        st.markdown("## Content QA System")
+        st.markdown("""
+<div style="display:flex;align-items:center;gap:10px;padding:4px 0 16px">
+  <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;flex-shrink:0">QA</div>
+  <div><div style="font-size:13px;font-weight:600;color:#111827;line-height:1.2">Content QA</div><div style="font-size:11px;color:#9ca3af">Editorial review</div></div>
+</div>""", unsafe_allow_html=True)
         st.divider()
-        st.markdown("### Navigation")
+        st.markdown('<p style="font-size:10px;font-weight:600;color:#9ca3af;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">Navigation</p>', unsafe_allow_html=True)
         page = st.radio("Go to",["Submit article","Dashboard"],label_visibility="collapsed")
         st.divider()
-        st.markdown("### Deduction rules")
+        st.markdown('<p style="font-size:10px;font-weight:600;color:#9ca3af;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">Deduction rules</p>', unsafe_allow_html=True)
+        for label, pts in [("Data accuracy","-1.5"),("Missing info","-1.5"),("Grammar","-1"),("Plagiarism / 20%","-5"),("AI content / 20%","-5")]:
+            st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f3f4f6"><span style="font-size:13px;color:#374151">{label}</span><span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">{pts}</span></div>', unsafe_allow_html=True)
         st.markdown("""
-<div style="margin-top:8px">
-<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
-<span style="font-size:13px;color:#374151">Data accuracy</span>
-<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1.5</span>
-</div>
-<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
-<span style="font-size:13px;color:#374151">Missing info</span>
-<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1.5</span>
-</div>
-<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
-<span style="font-size:13px;color:#374151">Grammar</span>
-<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1</span>
-</div>
-<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
-<span style="font-size:13px;color:#374151">Plagiarism / 20%</span>
-<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-5</span>
-</div>
-<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
-<span style="font-size:13px;color:#374151">AI content / 20%</span>
-<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-5</span>
-</div>
-</div>
-""", unsafe_allow_html=True)
-        if st.secrets.get("GPTZERO_API_KEY",""):
-            st.success("GPTZero AI detection connected")
-        else:
-            st.info("Add GPTZERO_API_KEY to Secrets for real AI detection")
-
+<div style="margin-top:16px;background:#f0f2f9;border-radius:10px;padding:12px 14px">
+  <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">Enable AI detection</div>
+  <div style="font-size:11px;color:#6b7280;line-height:1.5">Add your AI-content detection key to unlock real plagiarism & AI scoring.</div>
+</div>""", unsafe_allow_html=True)
         return page
 
 
@@ -682,10 +685,17 @@ def page_submit():
         '<div class="qa-hero-icon">&#x1F4CB;</div>'
         '</div>', unsafe_allow_html=True)
 
+    st.markdown(
+        '<div class="form-card-header">'
+        '<div><div class="form-card-title">New submission</div>'
+        '<div class="form-card-sub">Fill in the details below and upload the article file.</div></div>'
+        '<div class="ready-badge"><span class="ready-dot"></span> Ready</div>'
+        '</div>', unsafe_allow_html=True)
+
     with st.form("qa_form"):
         c1,c2 = st.columns(2)
         writer = c1.text_input("Writer name",placeholder="e.g. Sarah Ahmed")
-        title  = c2.text_input("Article title",placeholder="e.g. Everything About Montura 2")
+        title  = c2.text_input("Article title",placeholder="e.g. Everything About Mortgages")
         c3,c4  = st.columns(2)
         ctype  = c3.selectbox("Content type",CONTENT_TYPES)
         lang   = c4.selectbox("Language",LANGUAGES)
