@@ -731,12 +731,14 @@ div[class*="stFileUploader"] > label {
 }
 
 .stepper {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+    display: flex;
     align-items: center;
-    gap: 12px;
-    max-width: 760px;
-    margin: 0 auto 24px auto;
+    justify-content: flex-start;
+    gap: 14px;
+    width: 100%;
+    margin: 0 0 24px 0;
+    padding-left: 4px;
+    flex-wrap: nowrap;
 }
 
 .step-item {
@@ -776,6 +778,7 @@ div[class*="stFileUploader"] > label {
 }
 
 .step-line {
+    flex: 0 0 64px;
     height: 1px;
     border-top: 1px dashed #d6dbe6;
 }
