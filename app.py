@@ -99,107 +99,20 @@ KNOWN_DOMAINS = [
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
     st.markdown("""<style>
-    /* ── global ── */
     [data-testid="stAppViewContainer"]{background:#f0f2f9}
     [data-testid="stSidebar"]{background:#ffffff!important;border-right:1px solid #e8eaf0}
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#374151;font-size:13px}
     section[data-testid="stSidebar"] > div{padding-top:1.5rem}
 
-    /* ── form card wrapper ── */
-    [data-testid="stForm"]{background:#fff;border-radius:14px;padding:8px;border:1px solid #e8eaf0}
-
-    /* ── inputs ── */
-    [data-testid="stTextInput"] input{border-radius:10px!important;border:1px solid #e8eaf0!important;background:#fff!important;font-size:14px!important;padding:10px 14px!important}
-    [data-testid="stSelectbox"] > div > div{border-radius:10px!important;border:1px solid #e8eaf0!important;background:#fff!important}
-
-    /* ── platform radio → pill toggle ── */
-    [data-testid="stRadio"] > div{
-        display:flex!important;background:#f0f2f9!important;
-        border-radius:50px!important;padding:4px!important;
-        gap:2px!important;width:fit-content!important;
-        border:1px solid #e5e7eb!important}
-    [data-testid="stRadio"] label{
-        border-radius:50px!important;padding:8px 24px!important;
-        font-size:13px!important;font-weight:500!important;
-        cursor:pointer!important;margin:0!important;
-        border:none!important;transition:all .2s!important;
-        display:flex!important;align-items:center!important;gap:6px!important}
-    [data-testid="stRadio"] label:has(input:checked){
-        background:#10b981!important;color:#fff!important;
-        box-shadow:0 2px 8px rgba(16,185,129,.3)!important}
-    [data-testid="stRadio"] label:not(:has(input:checked)){
-        background:transparent!important;color:#9ca3af!important}
-    [data-testid="stRadio"] input{
-        position:absolute!important;opacity:0!important;
-        width:0!important;height:0!important;pointer-events:none!important}
-    [data-testid="stRadio"] p{
-        font-size:13px!important;font-weight:500!important;margin:0!important}
-    [data-testid="stRadio"] [data-testid="stMarkdownContainer"]{display:none!important}
-
-    /* ── file uploader → styled dropzone ── */
-    [data-testid="stFileUploadDropzone"]{
-        background:#f5f3ff!important;border:2px dashed #c4b5fd!important;
-        border-radius:16px!important;min-height:160px!important;
-        display:flex!important;align-items:center!important;justify-content:center!important;
-        position:relative!important}
-    [data-testid="stFileUploaderDropzoneInstructions"]{
-        display:flex!important;flex-direction:column!important;align-items:center!important;gap:6px!important}
-    [data-testid="stFileUploaderDropzoneInstructions"] svg{
-        width:44px!important;height:44px!important;color:#7c3aed!important;
-        background:#7c3aed!important;border-radius:12px!important;padding:10px!important;
-        box-sizing:border-box!important;stroke:#fff!important;margin-bottom:6px!important}
-    [data-testid="stFileUploaderDropzoneInstructions"] span{
-        font-size:14px!important;font-weight:500!important;color:#374151!important}
-    [data-testid="stFileUploaderDropzoneInstructions"] small{
-        font-size:12px!important;color:#9ca3af!important}
-    [data-testid="stFileUploadDropzone"] button{display:none!important}
-
-    /* ── run button → purple gradient pill ── */
-    [data-testid="stFormSubmitButton"] button, .stButton>button{
-        background:linear-gradient(135deg,#4f46e5,#7c3aed)!important;
-        color:#fff!important;border:none!important;
-        border-radius:12px!important;font-size:14px!important;
-        font-weight:600!important;padding:14px!important;
-        letter-spacing:.02em!important;
-        box-shadow:0 4px 15px rgba(124,58,237,.3)!important;
-        transition:all .2s!important}
-    [data-testid="stFormSubmitButton"] button:hover,.stButton>button:hover{
-        background:linear-gradient(135deg,#4338ca,#6d28d9)!important;
-        box-shadow:0 6px 20px rgba(124,58,237,.4)!important}
-
-    /* ── progress bar ── */
-    div[data-testid="stProgress"]>div{background:#7c3aed!important}
-
-    /* ── info box ── */
-    [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
-    [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
-
-    /* ── hero banner ── */
-    .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 50%,#a855f7 100%);
-             border-radius:16px;padding:28px 32px;margin-bottom:1.5rem;
-             display:flex;align-items:center;justify-content:space-between;color:#fff}
-    .qa-hero-badge{background:rgba(255,255,255,.18);border-radius:20px;
-                   padding:4px 12px;font-size:11px;font-weight:500;
-                   color:#fff;margin-bottom:10px;display:inline-block}
+    .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#a855f7 100%);
+             border-radius:16px;padding:28px 32px;margin-bottom:1.5rem;color:#fff;
+             display:flex;align-items:center;justify-content:space-between}
+    .qa-hero-badge{background:rgba(255,255,255,.2);border-radius:20px;padding:4px 12px;
+                   font-size:11px;font-weight:500;color:#fff;margin-bottom:10px;display:inline-block}
     .qa-hero h1{font-size:26px;font-weight:700;color:#fff;margin:6px 0 8px}
     .qa-hero p{font-size:13px;color:rgba(255,255,255,.85);line-height:1.6;margin:0}
-    .qa-hero-icon{width:56px;height:56px;background:rgba(255,255,255,.15);
-                  border-radius:14px;display:flex;align-items:center;
-                  justify-content:center;font-size:26px;flex-shrink:0}
+    .qa-hero-icon{width:56px;height:56px;background:rgba(255,255,255,.15);border-radius:14px;
+                  display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0}
 
-    /* ── form card ── */
-    .form-card{background:#fff;border-radius:14px;padding:24px 28px;
-               border:1px solid #e8eaf0;margin-bottom:1rem}
-    .form-card-title{font-size:16px;font-weight:600;color:#111827;margin-bottom:4px}
-    .form-card-sub{font-size:13px;color:#6b7280;margin-bottom:20px}
-
-    /* ── platform toggle ── */
-    .plat-toggle{display:inline-flex;background:#f0f2f9;border-radius:50px;padding:3px}
-    .plat-btn{padding:7px 20px;border-radius:50px;font-size:13px;font-weight:500;cursor:pointer;border:none;font-family:inherit;transition:all .2s}
-    .plat-bay{background:#10b981;color:#fff}
-    .plat-dub-off,.plat-bay-off{background:transparent;color:#6b7280}
-
-    /* ── score card ── */
     .score-hero{background:#fff;border:1px solid #e8eaf0;border-radius:14px;padding:24px 28px;margin-bottom:1rem}
     .score-num{font-size:56px;font-weight:700;color:#4f46e5;line-height:1}
     .score-den{font-size:18px;font-weight:400;color:#9ca3af}
@@ -211,7 +124,6 @@ def inject_css():
     .ok-row{display:flex;justify-content:space-between;padding:5px 0;color:#9ca3af;border-bottom:1px solid #f3f4f6;font-size:12px}
     .total-row{display:flex;justify-content:space-between;padding:8px 0 2px;font-weight:700;font-size:14px;color:#111827;border-top:2px solid #e8eaf0;margin-top:4px}
 
-    /* ── detect cards ── */
     .detect-card{border:1px solid #e8eaf0;border-radius:12px;padding:16px 18px;background:#fff}
     .detect-title{font-size:13px;font-weight:600;color:#111827;margin-bottom:8px}
     .detect-bar{height:6px;background:#f3f4f6;border-radius:3px;margin-bottom:10px}
@@ -227,31 +139,33 @@ def inject_css():
     .issue-snippet{background:#fff;border-left:3px solid #f59e0b;padding:6px 10px;margin-bottom:5px;border-radius:0 6px 6px 0;font-size:12px;color:#374151;line-height:1.55;font-style:italic}
     .issue-snippet:last-child{margin-bottom:0}
 
-    /* ── comments ── */
     .cmt-card{background:#f0f2f9;border-left:3px solid #4f46e5;padding:10px 14px;margin-bottom:8px;border-radius:0 8px 8px 0;font-size:13px}
     .cmt-author{font-weight:600;color:#4f46e5}
     .cmt-deduct{font-size:11px;color:#dc2626;font-weight:500;margin-top:3px}
     .cat-ref{font-size:10px;font-weight:500;padding:2px 8px;border-radius:20px;background:#ede9fe;color:#4f46e5;margin-left:6px}
 
-    /* ── suggestions ── */
     .suggest-item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
     .suggest-item:last-child{border:none;padding-bottom:0}
     .suggest-num{width:24px;height:24px;border-radius:50%;background:#ede9fe;color:#4f46e5;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
     .suggest-cat{font-size:11px;color:#9ca3af;margin-top:3px}
 
-    /* ── tags ── */
     .tag-str{background:#d1fae5;color:#065f46;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
     .tag-imp{background:#fef3c7;color:#92400e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
-
-    /* ── badges ── */
     .bdg{font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px}
     .bdg-bay{background:#d1fae5;color:#065f46}
     .bdg-dub{background:#fee2e2;color:#b91c1c}
-
-    /* ── misc ── */
     .no-cmt-notice{background:#f0f2f9;border:1px solid #e0e4f0;border-radius:8px;padding:12px 16px;font-size:13px;color:#6b7280;margin-bottom:10px}
-    div[data-testid="stProgress"]>div{background:#4f46e5!important}
-    .stButton>button{border-radius:50px!important;font-weight:500!important}
+
+    div[data-testid="stProgress"]>div{background:#7c3aed!important}
+
+    [data-testid="stFormSubmitButton"] button{
+        background:linear-gradient(135deg,#4f46e5,#7c3aed)!important;
+        color:#fff!important;border:none!important;border-radius:12px!important;
+        font-size:14px!important;font-weight:600!important;padding:14px!important;
+        letter-spacing:.02em!important;width:100%!important}
+
+    [data-testid="stAlert"]{border-radius:10px!important;border:none!important;background:#ede9fe!important}
+    [data-testid="stAlert"] p{color:#5b21b6!important;font-size:13px!important}
     </style>""", unsafe_allow_html=True)
 
 
