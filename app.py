@@ -197,13 +197,29 @@ def inject_css():
     [data-testid="stRadio"] label:not(:has(input:checked)):hover{background:rgba(0,0,0,.04)!important;color:#374151!important}
     [data-testid="stRadio"] input[type="radio"]{position:fixed!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}
     [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important;color:inherit!important}
-    [data-testid="stTextInput"] input{border-radius:10px!important;border:1.5px solid #e5e7eb!important;padding:10px 14px!important;font-size:14px!important;background:#fff!important}
-    [data-testid="stTextInput"] input:focus{border-color:#a78bfa!important;box-shadow:0 0 0 3px rgba(167,139,250,.15)!important}
-    [data-testid="stSelectbox"] > div > div{border-radius:10px!important;border:1.5px solid #e5e7eb!important;background:#fff!important;padding:2px 4px!important}
-    [data-testid="stSelectbox"] > div > div:focus-within{border-color:#a78bfa!important}
+    [data-testid="stRadio"] > label{display:none!important}
+    [data-testid="stWidgetLabel"]{display:none!important}
+    [data-testid="stTextInput"] input{
+        border-radius:10px!important;
+        border:1.5px solid #e2e8f0!important;
+        padding:11px 14px!important;
+        font-size:14px!important;
+        background:#ffffff!important;
+        box-shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06)!important;
+        color:#111827!important}
+    [data-testid="stTextInput"] input::placeholder{color:#9ca3af!important}
+    [data-testid="stTextInput"] input:focus{
+        border-color:#7c3aed!important;
+        box-shadow:0 0 0 3px rgba(124,58,237,.12),0 1px 3px rgba(0,0,0,.08)!important}
+    [data-testid="stSelectbox"] > div > div{
+        border-radius:10px!important;
+        border:1.5px solid #e2e8f0!important;
+        background:#ffffff!important;
+        box-shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06)!important;
+        padding:3px 4px!important}
     [data-testid="stForm"]{border:none!important;padding:0!important;background:transparent!important}
-    div[class*="stTextInput"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important}
-    div[class*="stSelectbox"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important}
+    div[class*="stTextInput"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important;margin-bottom:4px!important}
+    div[class*="stSelectbox"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important;margin-bottom:4px!important}
     </style>""", unsafe_allow_html=True)
 
 
