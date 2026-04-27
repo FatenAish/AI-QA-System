@@ -1771,13 +1771,6 @@ def page_submit():
                 </div>
             </div>
 
-            <div class="side-card help-box">
-                <div>
-                    <div class="side-card-title" style="margin-bottom:5px">Need help?</div>
-                    <div class="timeline-sub">Click the help icon next to any field for more information.</div>
-                </div>
-                <div class="help-icon">⌕</div>
-            </div>
             """,
             unsafe_allow_html=True
         )
