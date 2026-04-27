@@ -420,67 +420,137 @@ div[role="radiogroup"] label > div:first-child {
 }
 
 /* ─────────────────────────────────────────
-   FILE UPLOADER - CENTER CONTENT
+   CUSTOM UPLOAD AREA
 ───────────────────────────────────────── */
+.upload-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 10px 0 8px 0;
+}
+
+.upload-head-label {
+    font-size: 12px;
+    font-weight: 800;
+    color: #374151;
+}
+
+.upload-head-help {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid #cbd5e1;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+[data-testid="stFileUploader"] > label {
+    display: none !important;
+}
+
+[data-testid="stFileUploader"] section {
+    width: 100% !important;
+}
+
 [data-testid="stFileUploadDropzone"] {
-    min-height: 150px !important;
-    border: 1.5px dashed #d8deea !important;
-    border-radius: 16px !important;
-    background: #fbfcff !important;
+    min-height: 152px !important;
+    border: 1.5px dashed #9fa8ff !important;
+    border-radius: 18px !important;
+    background: #f7f8ff !important;
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
-    padding: 18px !important;
+    padding: 20px !important;
 }
 
 [data-testid="stFileUploadDropzone"]:hover {
-    border-color: #8b5cf6 !important;
-    background: #faf5ff !important;
+    border-color: #7c3aed !important;
+    background: #f5f3ff !important;
 }
 
-[data-testid="stFileUploadDropzone"] > div {
+[data-testid="stFileUploadDropzone"] > div,
+[data-testid="stFileUploaderDropzone"],
+[data-testid="stFileUploaderDropzoneInstructions"] {
     width: 100% !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
 }
 
 [data-testid="stFileUploaderDropzoneInstructions"] {
-    width: 100% !important;
+    position: relative !important;
+    min-height: 108px !important;
     display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    text-align: center !important;
-    gap: 8px !important;
-}
-
-[data-testid="stFileUploaderDropzoneInstructions"] > div {
-    width: 100% !important;
-    display: flex !important;
-    flex-direction: column !important;
     align-items: center !important;
     justify-content: center !important;
     text-align: center !important;
 }
 
-[data-testid="stFileUploaderDropzoneInstructions"] span,
-[data-testid="stFileUploaderDropzoneInstructions"] small,
-[data-testid="stFileUploaderDropzoneInstructions"] p {
-    text-align: center !important;
-    width: 100% !important;
-}
-
+/* hide the default upload button/text so we can recreate the centered UI */
 [data-testid="stFileUploaderDropzoneInstructions"] button,
-[data-testid="stFileUploadDropzone"] button {
-    margin: 0 auto 6px auto !important;
-    display: block !important;
-    border-radius: 12px !important;
-    padding: 10px 18px !important;
-    font-size: 13px !important;
-    font-weight: 800 !important;
-    border: 1px solid #d1d5db !important;
-    background: white !important;
+[data-testid="stFileUploaderDropzoneInstructions"] small,
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] p {
+    opacity: 0 !important;
+    max-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"]::before {
+    content: "⇪";
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #5b5ce2, #7c3aed);
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    box-shadow: 0 10px 20px rgba(91,92,226,.20);
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"]::after {
+    content: "Click or drag a file to upload\A DOCX, PDF or TXT · up to 200MB per file";
+    white-space: pre-line;
+    position: absolute;
+    left: 50%;
+    top: 62px;
+    transform: translateX(-50%);
+    width: 100%;
+    text-align: center;
+    font-size: 13px;
+    line-height: 1.7;
+    font-weight: 700;
+    color: #111827;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"]::after {
+    content: "Click or drag a file to upload\A DOCX, PDF or TXT · up to 200MB per file";
+    white-space: pre-line;
+    position: absolute;
+    left: 50%;
+    top: 62px;
+    transform: translateX(-50%);
+    width: 100%;
+    text-align: center;
+    font-size: 13px;
+    line-height: 1.7;
+    font-weight: 700;
+    color: #111827;
+}
+
+/* make second line lighter via text-shadow trick */
+[data-testid="stFileUploaderDropzoneInstructions"]::after {
+    font-family: inherit;
 }
 
 /* Main action button */
@@ -497,13 +567,14 @@ div[role="radiogroup"] label > div:first-child {
 }
 
 [data-testid="stAlert"] {
-    border-radius: 14px !important;
-    border: 1px solid #ddd6fe !important;
-    background: #f5f3ff !important;
+    border-radius: 16px !important;
+    border: 1px solid #d8dbe8 !important;
+    background: #f3f4fb !important;
+    padding: 2px 4px !important;
 }
 
 [data-testid="stAlert"] p {
-    color: #5b21b6 !important;
+    color: #4f46a5 !important;
     font-size: 12px !important;
 }
 
@@ -1112,10 +1183,20 @@ def page_submit():
                 key="platform_choice"
             )
 
+            st.markdown(
+                """
+                <div class="upload-head">
+                    <div class="upload-head-label">Upload article file</div>
+                    <div class="upload-head-help">?</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
             upload = st.file_uploader(
                 "Upload article file",
                 type=["docx", "pdf", "txt"],
-                help=".docx recommended — headings, links and editor comments are extracted automatically"
+                label_visibility="collapsed"
             )
 
             go = st.form_submit_button(
