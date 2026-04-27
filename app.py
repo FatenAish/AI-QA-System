@@ -99,47 +99,90 @@ KNOWN_DOMAINS = [
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
     st.markdown("""<style>
-    :root{--qa:#2D4A8A;--qa-light:#EEF2FB}
-    .qa-header{background:#1C2B5E;color:#fff;padding:16px 20px;border-radius:10px;margin-bottom:1.2rem}
-    .qa-header h1{font-size:18px;font-weight:500;margin:0}
-    .score-hero{background:var(--qa-light);border:1px solid var(--qa);border-radius:10px;padding:16px 20px;margin-bottom:1rem}
-    .score-num{font-size:52px;font-weight:500;color:var(--qa);line-height:1}
-    .score-den{font-size:16px;font-weight:400;color:#888}
-    .score-grade{font-size:13px;font-weight:500;margin-top:4px;color:var(--qa)}
-    .score-verdict{font-size:12px;color:#444;line-height:1.65;margin-top:8px}
-    .breakdown-box{background:#fff;border:0.5px solid #e0e0e0;border-radius:8px;padding:12px 14px;margin-top:10px;font-size:12px}
-    .ded-row{display:flex;justify-content:space-between;padding:4px 0;color:#991b1b;border-bottom:0.5px solid #fce}
-    .base-row{display:flex;justify-content:space-between;padding:4px 0;color:#555;border-bottom:0.5px solid #eee}
-    .ok-row{display:flex;justify-content:space-between;padding:4px 0;color:#888;border-bottom:0.5px solid #eee;font-size:11px}
-    .total-row{display:flex;justify-content:space-between;padding:6px 0 2px;font-weight:600;font-size:13px;color:#1a1d2e;border-top:1.5px solid #ccc;margin-top:2px}
-    .detect-card{border:0.5px solid #e0e0e0;border-radius:10px;padding:14px 16px;background:#fff}
-    .detect-title{font-size:12px;font-weight:600;color:#1a1d2e;margin-bottom:6px}
-    .detect-bar{height:6px;background:#eee;border-radius:3px;margin-bottom:8px}
+    /* ── global ── */
+    [data-testid="stAppViewContainer"]{background:#f0f2f9}
+    [data-testid="stSidebar"]{background:#ffffff!important;border-right:1px solid #e8eaf0}
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:#374151;font-size:13px}
+    section[data-testid="stSidebar"] > div{padding-top:1.5rem}
+
+    /* ── hero banner ── */
+    .qa-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 50%,#a855f7 100%);
+             border-radius:16px;padding:28px 32px;margin-bottom:1.5rem;
+             display:flex;align-items:center;justify-content:space-between;color:#fff}
+    .qa-hero-badge{background:rgba(255,255,255,.18);border-radius:20px;
+                   padding:4px 12px;font-size:11px;font-weight:500;
+                   color:#fff;margin-bottom:10px;display:inline-block}
+    .qa-hero h1{font-size:26px;font-weight:700;color:#fff;margin:6px 0 8px}
+    .qa-hero p{font-size:13px;color:rgba(255,255,255,.85);line-height:1.6;margin:0}
+    .qa-hero-icon{width:56px;height:56px;background:rgba(255,255,255,.15);
+                  border-radius:14px;display:flex;align-items:center;
+                  justify-content:center;font-size:26px;flex-shrink:0}
+
+    /* ── form card ── */
+    .form-card{background:#fff;border-radius:14px;padding:24px 28px;
+               border:1px solid #e8eaf0;margin-bottom:1rem}
+    .form-card-title{font-size:16px;font-weight:600;color:#111827;margin-bottom:4px}
+    .form-card-sub{font-size:13px;color:#6b7280;margin-bottom:20px}
+
+    /* ── platform toggle ── */
+    .plat-toggle{display:inline-flex;background:#f0f2f9;border-radius:50px;padding:3px}
+    .plat-btn{padding:7px 20px;border-radius:50px;font-size:13px;font-weight:500;cursor:pointer;border:none;font-family:inherit;transition:all .2s}
+    .plat-bay{background:#10b981;color:#fff}
+    .plat-dub-off,.plat-bay-off{background:transparent;color:#6b7280}
+
+    /* ── score card ── */
+    .score-hero{background:#fff;border:1px solid #e8eaf0;border-radius:14px;padding:24px 28px;margin-bottom:1rem}
+    .score-num{font-size:56px;font-weight:700;color:#4f46e5;line-height:1}
+    .score-den{font-size:18px;font-weight:400;color:#9ca3af}
+    .score-grade{font-size:14px;font-weight:600;margin-top:6px;color:#4f46e5}
+    .score-verdict{font-size:13px;color:#6b7280;line-height:1.65;margin-top:10px}
+    .breakdown-box{background:#f9fafb;border:1px solid #e8eaf0;border-radius:10px;padding:14px 16px;margin-top:14px;font-size:13px}
+    .ded-row{display:flex;justify-content:space-between;padding:5px 0;color:#dc2626;border-bottom:1px solid #fee2e2}
+    .base-row{display:flex;justify-content:space-between;padding:5px 0;color:#374151;border-bottom:1px solid #f3f4f6}
+    .ok-row{display:flex;justify-content:space-between;padding:5px 0;color:#9ca3af;border-bottom:1px solid #f3f4f6;font-size:12px}
+    .total-row{display:flex;justify-content:space-between;padding:8px 0 2px;font-weight:700;font-size:14px;color:#111827;border-top:2px solid #e8eaf0;margin-top:4px}
+
+    /* ── detect cards ── */
+    .detect-card{border:1px solid #e8eaf0;border-radius:12px;padding:16px 18px;background:#fff}
+    .detect-title{font-size:13px;font-weight:600;color:#111827;margin-bottom:8px}
+    .detect-bar{height:6px;background:#f3f4f6;border-radius:3px;margin-bottom:10px}
     .detect-bar-f{height:100%;border-radius:3px}
-    .detect-thresh{font-size:11px;font-weight:500;padding:4px 10px;border-radius:6px;display:inline-block;margin-bottom:8px}
-    .detect-note{font-size:11px;color:#666;line-height:1.6}
-    .detect-split{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
-    .detect-seg{text-align:center;background:#f5f6fa;border-radius:6px;padding:6px}
-    .detect-seg-n{font-size:14px;font-weight:500}
-    .detect-seg-l{font-size:10px;color:#888;margin-top:2px}
-    .issue-block{background:#fffbf0;border:0.5px solid #f0d080;border-radius:6px;padding:8px 10px;margin-top:8px}
-    .issue-block-title{font-size:10px;font-weight:600;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px}
-    .issue-snippet{background:#fff;border-left:3px solid #d97706;padding:5px 8px;margin-bottom:4px;border-radius:0 4px 4px 0;font-size:11px;color:#444;line-height:1.5;font-style:italic}
+    .detect-thresh{font-size:12px;font-weight:500;padding:5px 12px;border-radius:8px;display:inline-block;margin-bottom:10px}
+    .detect-note{font-size:12px;color:#6b7280;line-height:1.6}
+    .detect-split{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+    .detect-seg{text-align:center;background:#f9fafb;border-radius:8px;padding:8px}
+    .detect-seg-n{font-size:15px;font-weight:600}
+    .detect-seg-l{font-size:11px;color:#9ca3af;margin-top:2px}
+    .issue-block{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px}
+    .issue-block-title{font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+    .issue-snippet{background:#fff;border-left:3px solid #f59e0b;padding:6px 10px;margin-bottom:5px;border-radius:0 6px 6px 0;font-size:12px;color:#374151;line-height:1.55;font-style:italic}
     .issue-snippet:last-child{margin-bottom:0}
-    .cmt-card{background:#fff8f0;border-left:3px solid #2D4A8A;padding:8px 12px;margin-bottom:6px;border-radius:0 6px 6px 0;font-size:12px}
-    .cmt-author{font-weight:600;color:#2D4A8A}
-    .cmt-deduct{font-size:10px;color:#991b1b;font-weight:500;margin-top:3px}
-    .cat-ref{font-size:10px;font-weight:500;padding:1px 7px;border-radius:20px;background:#EEF2FB;color:#2D4A8A;margin-left:6px}
-    .suggest-item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:0.5px solid #eee;font-size:12px}
+
+    /* ── comments ── */
+    .cmt-card{background:#f0f2f9;border-left:3px solid #4f46e5;padding:10px 14px;margin-bottom:8px;border-radius:0 8px 8px 0;font-size:13px}
+    .cmt-author{font-weight:600;color:#4f46e5}
+    .cmt-deduct{font-size:11px;color:#dc2626;font-weight:500;margin-top:3px}
+    .cat-ref{font-size:10px;font-weight:500;padding:2px 8px;border-radius:20px;background:#ede9fe;color:#4f46e5;margin-left:6px}
+
+    /* ── suggestions ── */
+    .suggest-item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
     .suggest-item:last-child{border:none;padding-bottom:0}
-    .suggest-num{width:22px;height:22px;border-radius:50%;background:#EEF2FB;color:#2D4A8A;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
-    .suggest-cat{font-size:10px;color:#888;margin-top:3px}
-    .tag-str{background:#d1fae5;color:#065f46;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;display:inline-block;margin:2px}
-    .tag-imp{background:#fef3c7;color:#92400e;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;display:inline-block;margin:2px}
-    .bdg{font-size:10px;font-weight:500;padding:2px 9px;border-radius:20px}
-    .bdg-bay{background:#e8f5e9;color:#1b5e20}
-    .bdg-dub{background:#fdecea;color:#b71c1c}
-    .no-cmt-notice{background:#f5f6fa;border:0.5px solid #e0e0e0;border-radius:6px;padding:10px 14px;font-size:12px;color:#666;margin-bottom:8px}
+    .suggest-num{width:24px;height:24px;border-radius:50%;background:#ede9fe;color:#4f46e5;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+    .suggest-cat{font-size:11px;color:#9ca3af;margin-top:3px}
+
+    /* ── tags ── */
+    .tag-str{background:#d1fae5;color:#065f46;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
+    .tag-imp{background:#fef3c7;color:#92400e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;display:inline-block;margin:2px}
+
+    /* ── badges ── */
+    .bdg{font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px}
+    .bdg-bay{background:#d1fae5;color:#065f46}
+    .bdg-dub{background:#fee2e2;color:#b91c1c}
+
+    /* ── misc ── */
+    .no-cmt-notice{background:#f0f2f9;border:1px solid #e0e4f0;border-radius:8px;padding:12px 16px;font-size:13px;color:#6b7280;margin-bottom:10px}
+    div[data-testid="stProgress"]>div{background:#4f46e5!important}
+    .stButton>button{border-radius:50px!important;font-weight:500!important}
     </style>""", unsafe_allow_html=True)
 
 
@@ -612,12 +655,29 @@ def sidebar():
         st.divider()
         st.markdown("### Deduction rules")
         st.markdown("""
-| Rule | Points |
-|---|---|
-| Per editor comment | - 1 |
-| Plagiarism over 20% | - 5 |
-| AI content over 20% | - 5 |
-        """)
+<div style="margin-top:8px">
+<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
+<span style="font-size:13px;color:#374151">Data accuracy</span>
+<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1.5</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
+<span style="font-size:13px;color:#374151">Missing info</span>
+<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1.5</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
+<span style="font-size:13px;color:#374151">Grammar</span>
+<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-1</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6">
+<span style="font-size:13px;color:#374151">Plagiarism / 20%</span>
+<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-5</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+<span style="font-size:13px;color:#374151">AI content / 20%</span>
+<span style="background:#fee2e2;color:#dc2626;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px">-5</span>
+</div>
+</div>
+""", unsafe_allow_html=True)
         if st.secrets.get("GPTZERO_API_KEY",""):
             st.success("GPTZero AI detection connected")
         else:
@@ -629,7 +689,15 @@ def sidebar():
 # ── submit page ────────────────────────────────────────────────────────────
 def page_submit():
     inject_css()
-    st.markdown('<div class="qa-header"><h1>Content QA System</h1></div>',unsafe_allow_html=True)
+    st.markdown(
+        '<div class="qa-hero">'
+        '<div>'
+        '<div class="qa-hero-badge">Editorial QA Engine</div>'
+        '<h1>Content QA System</h1>'
+        '<p>Submit articles for automated review. We score editor comments,<br>detect plagiarism, and flag AI-generated content.</p>'
+        '</div>'
+        '<div class="qa-hero-icon">&#x1F4CB;</div>'
+        '</div>', unsafe_allow_html=True)
 
     with st.form("qa_form"):
         c1,c2 = st.columns(2)
@@ -986,7 +1054,15 @@ def render_report(sub):
 # ── dashboard ──────────────────────────────────────────────────────────────
 def page_dashboard():
     inject_css()
-    st.markdown('<div class="qa-header"><h1>Dashboard</h1></div>',unsafe_allow_html=True)
+    st.markdown(
+        '<div class="qa-hero">'
+        '<div>'
+        '<div class="qa-hero-badge">Overview</div>'
+        '<h1>Dashboard</h1>'
+        '<p>All submissions across Bayut and Dubizzle</p>'
+        '</div>'
+        '<div class="qa-hero-icon">&#x1F4CA;</div>'
+        '</div>', unsafe_allow_html=True)
     all_subs = st.session_state.get("submissions",[])
     if not all_subs:
         st.info("No submissions yet.")
