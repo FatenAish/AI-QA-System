@@ -197,15 +197,13 @@ def inject_css():
     [data-testid="stRadio"] label:not(:has(input:checked)):hover{background:rgba(0,0,0,.04)!important;color:#374151!important}
     [data-testid="stRadio"] input[type="radio"]{position:fixed!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}
     [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important;color:inherit!important}
-    [data-testid="stRadio"] > label{display:none!important}
-    [data-testid="stWidgetLabel"]{display:none!important}
     [data-testid="stTextInput"] input{
         border-radius:10px!important;
-        border:1.5px solid #e2e8f0!important;
+        border:2px solid #d1d5db!important;
         padding:11px 14px!important;
         font-size:14px!important;
         background:#ffffff!important;
-        box-shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06)!important;
+        box-shadow:0 2px 4px rgba(0,0,0,.07)!important;
         color:#111827!important}
     [data-testid="stTextInput"] input::placeholder{color:#9ca3af!important}
     [data-testid="stTextInput"] input:focus{
@@ -213,9 +211,9 @@ def inject_css():
         box-shadow:0 0 0 3px rgba(124,58,237,.12),0 1px 3px rgba(0,0,0,.08)!important}
     [data-testid="stSelectbox"] > div > div{
         border-radius:10px!important;
-        border:1.5px solid #e2e8f0!important;
+        border:2px solid #d1d5db!important;
         background:#ffffff!important;
-        box-shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06)!important;
+        box-shadow:0 2px 4px rgba(0,0,0,.07)!important;
         padding:3px 4px!important}
     [data-testid="stForm"]{border:none!important;padding:0!important;background:transparent!important}
     div[class*="stTextInput"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important;margin-bottom:4px!important}
