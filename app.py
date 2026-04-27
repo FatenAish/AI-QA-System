@@ -120,12 +120,32 @@ def inject_css():
     [data-testid="stRadio"] input{display:none!important}
     [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important}
 
-    /* ── file uploader → dashed dropzone ── */
-    [data-testid="stFileUploadDropzone"]{background:#fff!important;border:2px dashed #c4b5fd!important;border-radius:12px!important;padding:24px!important}
-    [data-testid="stFileUploadDropzone"] p{color:#6b7280!important;font-size:13px!important}
-    [data-testid="stFileUploadDropzone"] small{color:#9ca3af!important}
-    [data-testid="stFileUploadDropzone"] svg{color:#7c3aed!important}
-    [data-testid="stFileUploadDropzone"] button{background:#7c3aed!important;color:#fff!important;border-radius:50px!important;border:none!important;padding:8px 20px!important;font-weight:500!important}
+    /* ── file uploader → large centered dropzone ── */
+    [data-testid="stFileUploadDropzone"]{
+        background:#f5f3ff!important;
+        border:2px dashed #c4b5fd!important;
+        border-radius:16px!important;
+        padding:40px 24px!important;
+        text-align:center!important;
+        min-height:160px!important;
+        display:flex!important;
+        flex-direction:column!important;
+        align-items:center!important;
+        justify-content:center!important}
+    [data-testid="stFileUploadDropzone"] section{display:flex!important;flex-direction:column!important;align-items:center!important;gap:8px!important}
+    [data-testid="stFileUploadDropzone"] button{
+        background:#7c3aed!important;color:#fff!important;
+        border-radius:14px!important;border:none!important;
+        width:52px!important;height:52px!important;
+        padding:0!important;font-size:22px!important;
+        margin-bottom:8px!important;cursor:pointer!important}
+    [data-testid="stFileUploadDropzone"] span{display:none!important}
+    [data-testid="stFileUploadDropzone"] p{
+        color:#374151!important;font-size:14px!important;
+        font-weight:500!important;margin:0!important;text-align:center!important}
+    [data-testid="stFileUploadDropzone"] small{
+        color:#9ca3af!important;font-size:12px!important;
+        text-align:center!important;display:block!important;margin-top:4px!important}
 
     /* ── run button → purple gradient pill ── */
     [data-testid="stFormSubmitButton"] button, .stButton>button{
