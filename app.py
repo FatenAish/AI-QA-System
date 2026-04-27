@@ -420,7 +420,7 @@ div[role="radiogroup"] label > div:first-child {
 }
 
 /* ─────────────────────────────────────────
-   CUSTOM UPLOAD AREA
+   CUSTOM UPLOAD AREA - MATCH SCREENSHOT
 ───────────────────────────────────────── */
 .upload-head {
     display: flex;
@@ -448,23 +448,23 @@ div[role="radiogroup"] label > div:first-child {
     justify-content: center;
 }
 
+/* Hide Streamlit's visible label because we use the custom header above */
 [data-testid="stFileUploader"] > label {
     display: none !important;
 }
 
-[data-testid="stFileUploader"] section {
-    width: 100% !important;
-}
-
+/* Dropzone shape */
 [data-testid="stFileUploadDropzone"] {
     min-height: 152px !important;
     border: 1.5px dashed #9fa8ff !important;
     border-radius: 18px !important;
     background: #f7f8ff !important;
+    position: relative !important;
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
-    padding: 20px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
 }
 
 [data-testid="stFileUploadDropzone"]:hover {
@@ -472,85 +472,82 @@ div[role="radiogroup"] label > div:first-child {
     background: #f5f3ff !important;
 }
 
-[data-testid="stFileUploadDropzone"] > div,
-[data-testid="stFileUploaderDropzone"],
-[data-testid="stFileUploaderDropzoneInstructions"] {
-    width: 100% !important;
-}
-
-[data-testid="stFileUploaderDropzoneInstructions"] {
-    position: relative !important;
-    min-height: 108px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    text-align: center !important;
-}
-
-/* hide the default upload button/text so we can recreate the centered UI */
-[data-testid="stFileUploaderDropzoneInstructions"] button,
-[data-testid="stFileUploaderDropzoneInstructions"] small,
-[data-testid="stFileUploaderDropzoneInstructions"] span,
-[data-testid="stFileUploaderDropzoneInstructions"] p {
+/* Hide all native uploader text/icons */
+[data-testid="stFileUploadDropzone"] svg,
+[data-testid="stFileUploaderDropzoneInstructions"],
+[data-testid="stFileUploadDropzone"] small,
+[data-testid="stFileUploadDropzone"] span,
+[data-testid="stFileUploadDropzone"] p {
     opacity: 0 !important;
-    max-height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    overflow: hidden !important;
+    visibility: hidden !important;
 }
 
-[data-testid="stFileUploaderDropzoneInstructions"]::before {
-    content: "⇪";
+/* Make the native Upload button invisible but keep the whole box clickable */
+[data-testid="stFileUploadDropzone"] button {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 0 !important;
+    z-index: 20 !important;
+    cursor: pointer !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+/* Center purple icon */
+[data-testid="stFileUploadDropzone"]::before {
+    content: "⇧";
+    position: absolute;
+    left: 50%;
+    top: 30px;
+    transform: translateX(-50%);
     width: 44px;
     height: 44px;
     border-radius: 16px;
     background: linear-gradient(135deg, #5b5ce2, #7c3aed);
     color: #ffffff;
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 800;
     display: flex;
     align-items: center;
     justify-content: center;
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
     box-shadow: 0 10px 20px rgba(91,92,226,.20);
+    z-index: 2;
 }
 
-[data-testid="stFileUploaderDropzoneInstructions"]::after {
-    content: "Click or drag a file to upload\A DOCX, PDF or TXT · up to 200MB per file";
-    white-space: pre-line;
+/* Main line - bold */
+[data-testid="stFileUploadDropzone"]::after {
+    content: "Click or drag a file to upload";
     position: absolute;
     left: 50%;
-    top: 62px;
+    top: 88px;
     transform: translateX(-50%);
     width: 100%;
     text-align: center;
     font-size: 13px;
-    line-height: 1.7;
-    font-weight: 700;
+    line-height: 1.4;
+    font-weight: 800;
     color: #111827;
+    z-index: 2;
 }
 
-[data-testid="stFileUploaderDropzoneInstructions"]::after {
-    content: "Click or drag a file to upload\A DOCX, PDF or TXT · up to 200MB per file";
-    white-space: pre-line;
+/* Second line - normal weight */
+[data-testid="stFileUploadDropzone"] > div::after {
+    content: "DOCX, PDF or TXT · up to 200MB per file";
     position: absolute;
     left: 50%;
-    top: 62px;
+    top: 113px;
     transform: translateX(-50%);
     width: 100%;
     text-align: center;
-    font-size: 13px;
-    line-height: 1.7;
-    font-weight: 700;
-    color: #111827;
-}
-
-/* make second line lighter via text-shadow trick */
-[data-testid="stFileUploaderDropzoneInstructions"]::after {
-    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.4;
+    font-weight: 400;
+    color: #6b7280;
+    z-index: 2;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
 /* Main action button */
