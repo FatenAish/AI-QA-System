@@ -191,13 +191,12 @@ def inject_css():
     [data-testid="stFileUploaderDropzoneInstructions"] svg{background:#7c3aed!important;border-radius:12px!important;padding:10px!important;color:#fff!important;width:40px!important;height:40px!important}
     /* platform pill toggle */
     [data-testid="stRadio"] > div{display:flex!important;flex-direction:row!important;background:#f3f4f6!important;border-radius:50px!important;padding:3px!important;gap:2px!important;width:fit-content!important}
-    [data-testid="stRadio"] label{border-radius:50px!important;padding:7px 20px!important;font-size:13px!important;font-weight:500!important;cursor:pointer!important;margin:0!important;min-height:unset!important;display:flex!important;align-items:center!important}
+    [data-testid="stRadio"] label{border-radius:50px!important;padding:7px 22px!important;font-size:13px!important;font-weight:500!important;cursor:pointer!important;margin:0!important;min-height:unset!important;display:flex!important;align-items:center!important;justify-content:center!important}
     [data-testid="stRadio"] label:has(input:checked){background:#10b981!important;color:#fff!important}
     [data-testid="stRadio"] label:not(:has(input:checked)){background:transparent!important;color:#6b7280!important}
     [data-testid="stRadio"] label:not(:has(input:checked)):hover{background:rgba(0,0,0,.04)!important;color:#374151!important}
     [data-testid="stRadio"] input[type="radio"]{position:fixed!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}
-    [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important}
-    [data-testid="stRadio"] div[data-testid="stMarkdownContainer"]{display:none!important}
+    [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important;color:inherit!important}
     [data-testid="stTextInput"] input{border-radius:8px!important;border:1px solid #e5e7eb!important}
     [data-testid="stSelectbox"] > div > div{border-radius:8px!important;border:1px solid #e5e7eb!important}
     </style>""", unsafe_allow_html=True)
