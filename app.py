@@ -197,8 +197,13 @@ def inject_css():
     [data-testid="stRadio"] label:not(:has(input:checked)):hover{background:rgba(0,0,0,.04)!important;color:#374151!important}
     [data-testid="stRadio"] input[type="radio"]{position:fixed!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}
     [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important;line-height:1!important;color:inherit!important}
-    [data-testid="stTextInput"] input{border-radius:8px!important;border:1px solid #e5e7eb!important}
-    [data-testid="stSelectbox"] > div > div{border-radius:8px!important;border:1px solid #e5e7eb!important}
+    [data-testid="stTextInput"] input{border-radius:10px!important;border:1.5px solid #e5e7eb!important;padding:10px 14px!important;font-size:14px!important;background:#fff!important}
+    [data-testid="stTextInput"] input:focus{border-color:#a78bfa!important;box-shadow:0 0 0 3px rgba(167,139,250,.15)!important}
+    [data-testid="stSelectbox"] > div > div{border-radius:10px!important;border:1.5px solid #e5e7eb!important;background:#fff!important;padding:2px 4px!important}
+    [data-testid="stSelectbox"] > div > div:focus-within{border-color:#a78bfa!important}
+    [data-testid="stForm"]{border:none!important;padding:0!important;background:transparent!important}
+    div[class*="stTextInput"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important}
+    div[class*="stSelectbox"] > label{font-size:13px!important;font-weight:500!important;color:#374151!important}
     </style>""", unsafe_allow_html=True)
 
 
