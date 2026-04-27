@@ -113,39 +113,46 @@ def inject_css():
     [data-testid="stSelectbox"] > div > div{border-radius:10px!important;border:1px solid #e8eaf0!important;background:#fff!important}
 
     /* ── platform radio → pill toggle ── */
-    [data-testid="stRadio"] > div{display:flex!important;background:#f0f2f9;border-radius:50px;padding:3px;gap:0;width:fit-content}
-    [data-testid="stRadio"] label{border-radius:50px!important;padding:7px 22px!important;font-size:13px!important;font-weight:500!important;cursor:pointer;margin:0!important;border:none!important;transition:all .2s}
-    [data-testid="stRadio"] label:has(input:checked){background:#10b981!important;color:#fff!important}
-    [data-testid="stRadio"] label:not(:has(input:checked)){background:transparent!important;color:#6b7280!important}
-    [data-testid="stRadio"] input{display:none!important}
-    [data-testid="stRadio"] p{font-size:13px!important;font-weight:500!important;margin:0!important}
+    [data-testid="stRadio"] > div{
+        display:flex!important;background:#f0f2f9!important;
+        border-radius:50px!important;padding:4px!important;
+        gap:2px!important;width:fit-content!important;
+        border:1px solid #e5e7eb!important}
+    [data-testid="stRadio"] label{
+        border-radius:50px!important;padding:8px 24px!important;
+        font-size:13px!important;font-weight:500!important;
+        cursor:pointer!important;margin:0!important;
+        border:none!important;transition:all .2s!important;
+        display:flex!important;align-items:center!important;gap:6px!important}
+    [data-testid="stRadio"] label:has(input:checked){
+        background:#10b981!important;color:#fff!important;
+        box-shadow:0 2px 8px rgba(16,185,129,.3)!important}
+    [data-testid="stRadio"] label:not(:has(input:checked)){
+        background:transparent!important;color:#9ca3af!important}
+    [data-testid="stRadio"] input{
+        position:absolute!important;opacity:0!important;
+        width:0!important;height:0!important;pointer-events:none!important}
+    [data-testid="stRadio"] p{
+        font-size:13px!important;font-weight:500!important;margin:0!important}
+    [data-testid="stRadio"] [data-testid="stMarkdownContainer"]{display:none!important}
 
-    /* ── file uploader → large centered dropzone ── */
+    /* ── file uploader → styled dropzone ── */
     [data-testid="stFileUploadDropzone"]{
-        background:#f5f3ff!important;
-        border:2px dashed #c4b5fd!important;
-        border-radius:16px!important;
-        padding:40px 24px!important;
-        text-align:center!important;
-        min-height:160px!important;
-        display:flex!important;
-        flex-direction:column!important;
-        align-items:center!important;
-        justify-content:center!important}
-    [data-testid="stFileUploadDropzone"] section{display:flex!important;flex-direction:column!important;align-items:center!important;gap:8px!important}
-    [data-testid="stFileUploadDropzone"] button{
-        background:#7c3aed!important;color:#fff!important;
-        border-radius:14px!important;border:none!important;
-        width:52px!important;height:52px!important;
-        padding:0!important;font-size:22px!important;
-        margin-bottom:8px!important;cursor:pointer!important}
-    [data-testid="stFileUploadDropzone"] span{display:none!important}
-    [data-testid="stFileUploadDropzone"] p{
-        color:#374151!important;font-size:14px!important;
-        font-weight:500!important;margin:0!important;text-align:center!important}
-    [data-testid="stFileUploadDropzone"] small{
-        color:#9ca3af!important;font-size:12px!important;
-        text-align:center!important;display:block!important;margin-top:4px!important}
+        background:#f5f3ff!important;border:2px dashed #c4b5fd!important;
+        border-radius:16px!important;min-height:160px!important;
+        display:flex!important;align-items:center!important;justify-content:center!important;
+        position:relative!important}
+    [data-testid="stFileUploaderDropzoneInstructions"]{
+        display:flex!important;flex-direction:column!important;align-items:center!important;gap:6px!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] svg{
+        width:44px!important;height:44px!important;color:#7c3aed!important;
+        background:#7c3aed!important;border-radius:12px!important;padding:10px!important;
+        box-sizing:border-box!important;stroke:#fff!important;margin-bottom:6px!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] span{
+        font-size:14px!important;font-weight:500!important;color:#374151!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] small{
+        font-size:12px!important;color:#9ca3af!important}
+    [data-testid="stFileUploadDropzone"] button{display:none!important}
 
     /* ── run button → purple gradient pill ── */
     [data-testid="stFormSubmitButton"] button, .stButton>button{
