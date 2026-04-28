@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import re
 import math
+import difflib
 import os
 import urllib.request
 import urllib.error
@@ -389,6 +390,79 @@ def parse_file(f):
     else:                        return extract_txt(raw)
 
 
+
+# ── Silent edit detection ──────────────────────────────────────────────────
+def normalize_text(text):
+    text = text or ""
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def classify_changed_text(text):
+    low = (text or "").lower()
+    data_keywords = ["wrong", "incorrect", "correct", "source", "price", "aed", "handover", "developer", "location", "bedroom", "bedrooms", "apartment", "villa", "townhouse", "floor", "payment", "plan", "date", "minutes", "mins", "dld", "dubai land department", "fact", "data", "area", "sqft", "completion", "غرفة", "غرف", "درهم", "تسليم", "المطور", "الموقع", "المساحة", "دائرة الأراضي", "خطة السداد", "موعد", "تاريخ"]
+    missing_keywords = ["also", "including", "features", "amenities", "offers", "provides", "located", "near", "close to", "include", "mention", "available", "facilities", "residents", "community", "access", "service", "services", "يضم", "تشمل", "توفر", "يقع", "بالقرب", "مرافق", "مزايا", "خدمات"]
+    grammar_keywords = ["the", "a", "an", "and", "or", "which", "that", "is", "are", "was", "were", "with", "for", "from", "to", "in", "on", "من", "في", "على", "إلى", "عن", "هذا", "هذه", "التي", "الذي"]
+    if any(k in low for k in data_keywords): return "Possible factual/data edit", 2.0
+    if any(k in low for k in missing_keywords): return "Possible missing-info edit", 1.5
+    if any(k in low for k in grammar_keywords): return "Grammar/style edit", 0.5
+    return "General rewrite", 1.0
+
+
+def compare_versions(original_text, edited_text):
+    original = normalize_text(original_text)
+    edited = normalize_text(edited_text)
+    original_words = original.split()
+    edited_words = edited.split()
+    if not original_words and not edited_words:
+        similarity_pct = 100.0
+    elif not original_words or not edited_words:
+        similarity_pct = 0.0
+    else:
+        similarity_pct = round(difflib.SequenceMatcher(None, original_words, edited_words).ratio() * 100, 1)
+    change_pct = round(100 - similarity_pct, 1)
+    sm = difflib.SequenceMatcher(None, original_words, edited_words)
+    added_words_count = deleted_words_count = rewritten_words_count = 0
+    change_items = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        old_chunk = " ".join(original_words[i1:i2]).strip()
+        new_chunk = " ".join(edited_words[j1:j2]).strip()
+        if tag == "equal": continue
+        if tag == "insert":
+            added_words_count += j2 - j1
+            label, pts = classify_changed_text(new_chunk)
+            change_items.append({"type": "Added", "category": label, "deduction_weight": pts, "old": "", "new": new_chunk[:700], "word_count": j2 - j1})
+        elif tag == "delete":
+            deleted_words_count += i2 - i1
+            label, pts = classify_changed_text(old_chunk)
+            change_items.append({"type": "Deleted", "category": label, "deduction_weight": pts, "old": old_chunk[:700], "new": "", "word_count": i2 - i1})
+        elif tag == "replace":
+            rewritten_words_count += max(i2 - i1, j2 - j1)
+            label_old, pts_old = classify_changed_text(old_chunk)
+            label_new, pts_new = classify_changed_text(new_chunk)
+            label = label_old if pts_old >= pts_new else label_new
+            pts = max(pts_old, pts_new)
+            change_items.append({"type": "Rewritten", "category": label, "deduction_weight": pts, "old": old_chunk[:700], "new": new_chunk[:700], "word_count": max(i2 - i1, j2 - j1)})
+    factual_edits = sum(1 for x in change_items if x["category"] == "Possible factual/data edit")
+    missing_info_edits = sum(1 for x in change_items if x["category"] == "Possible missing-info edit")
+    grammar_edits = sum(1 for x in change_items if x["category"] == "Grammar/style edit")
+    rewrite_edits = sum(1 for x in change_items if x["category"] == "General rewrite")
+    if change_pct <= 5:
+        level, base_deduction = "Very minor edits", 1
+    elif change_pct <= 10:
+        level, base_deduction = "Minor edits", 2
+    elif change_pct <= 25:
+        level, base_deduction = "Medium edits", 5
+    elif change_pct <= 45:
+        level, base_deduction = "Major edits", 10
+    else:
+        level, base_deduction = "Heavy rewrite", 15
+    issue_bonus = min((factual_edits * 1.5) + (missing_info_edits * 1.0), 10)
+    suggested_deduction = min(round(base_deduction + issue_bonus, 1), 25)
+    final_score = max(0, round(100 - suggested_deduction, 1))
+    return {"similarity": similarity_pct, "change_pct": change_pct, "level": level, "score": final_score, "suggested_deduction": suggested_deduction, "original_word_count": len(original_words), "edited_word_count": len(edited_words), "added_words_count": added_words_count, "deleted_words_count": deleted_words_count, "rewritten_words_count": rewritten_words_count, "factual_edits": factual_edits, "missing_info_edits": missing_info_edits, "grammar_edits": grammar_edits, "rewrite_edits": rewrite_edits, "change_items": change_items[:60], "total_change_items": len(change_items)}
 # ── Deterministic scoring ──────────────────────────────────────────────────
 # ALL numbers that affect the final score are computed here — no AI involved.
 
@@ -622,7 +696,7 @@ def sidebar():
     with st.sidebar:
         st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
         st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
-        page = st.radio("Navigation", ["📄  Submit article", "◫  Dashboard"],
+        page = st.radio("Navigation", ["📄  Submit article", "⇄  Silent edit detection", "◫  Dashboard"],
                         label_visibility="collapsed", key="sidebar_navigation")
         st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
         st.markdown("""<div class="sb-deduction-wrap"><div class="sb-deduction-card">
@@ -632,7 +706,7 @@ def sidebar():
             <div class="sb-deduction-row"><span>Plagiarism over 20%</span><span class="sb-pill">−5</span></div>
             <div class="sb-deduction-row"><span>AI content over 20%</span><span class="sb-pill">−5</span></div>
         </div></div>""", unsafe_allow_html=True)
-        return "Dashboard" if "Dashboard" in page else "Submit article"
+        return "Dashboard" if "Dashboard" in page else "Silent edit detection" if "Silent" in page else "Submit article"
 
 
 # ── Submit page ────────────────────────────────────────────────────────────
@@ -934,6 +1008,79 @@ def render_report(sub):
     st.caption(f"Content QA System — {sub['platform']} — Powered by Groq — {sub['date']}")
 
 
+
+# ── Silent edit detection page ─────────────────────────────────────────────
+def render_change_card(item, idx):
+    bg_map = {"Possible factual/data edit": ("#fee2e2", "#991b1b"), "Possible missing-info edit": ("#fef3c7", "#92400e"), "Grammar/style edit": ("#eef2ff", "#3730a3"), "General rewrite": ("#f1f5f9", "#334155")}
+    bg, tc = bg_map.get(item.get("category"), ("#f1f5f9", "#334155"))
+    old_html = f'<div style="margin-top:8px"><strong>Before:</strong><div style="background:#fff;border-left:3px solid #ef4444;padding:7px 10px;border-radius:0 8px 8px 0;color:#374151;font-size:12px;line-height:1.55">{item.get("old", "")}</div></div>' if item.get("old") else ""
+    new_html = f'<div style="margin-top:8px"><strong>After:</strong><div style="background:#fff;border-left:3px solid #22c55e;padding:7px 10px;border-radius:0 8px 8px 0;color:#374151;font-size:12px;line-height:1.55">{item.get("new", "")}</div></div>' if item.get("new") else ""
+    st.markdown(f'''<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px 16px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><strong style="color:#111827;font-size:13px">Change {idx} — {item.get("type", "")}</strong><span style="font-size:11px;font-weight:800;background:{bg};color:{tc};border-radius:999px;padding:3px 9px">{item.get("category", "")}</span><span style="font-size:11px;color:#64748b">{item.get("word_count", 0)} words</span></div>{old_html}{new_html}</div>''', unsafe_allow_html=True)
+
+
+def page_silent_detection():
+    inject_css()
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">Two-version comparison</div><h1>Silent Edit Detection</h1><p>Upload the writer original draft and the editor final version to detect edits made without comments.</p></div><div class="qa-hero-icon">⇄</div></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown('<div class="form-card-header"><div><div class="form-card-title">Compare two versions</div><div class="form-card-sub">Use this when the editor edited directly without leaving comments.</div></div><div class="ready-badge"><span class="ready-dot"></span> Test mode</div></div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            writer_name = st.text_input("Writer name", placeholder="e.g. Sarah Ahmed", key="silent_writer")
+            original_file = st.file_uploader("Upload writer original version", type=["docx", "pdf", "txt"], key="silent_original")
+        with c2:
+            editor_name = st.text_input("Editor / subeditor", placeholder="e.g. Mohamed Ali", key="silent_editor")
+            edited_file = st.file_uploader("Upload editor final version", type=["docx", "pdf", "txt"], key="silent_edited")
+        title = st.text_input("Article title", placeholder="Optional", key="silent_title")
+        run_compare = st.button("Run silent edit comparison", type="primary", use_container_width=True)
+    if not run_compare:
+        st.info("Upload both versions, then run the comparison. This does not use Google Docs version history; it compares the two files you upload.")
+        return
+    if not original_file or not edited_file:
+        st.error("Please upload both files: the writer original version and the editor final version.")
+        return
+    with st.spinner("Reading and comparing both versions…"):
+        original_parsed = parse_file(original_file)
+        edited_parsed = parse_file(edited_file)
+        if not original_parsed.get("text") or len(original_parsed.get("text", "")) < 20:
+            st.error(f"Could not read the original file. {original_parsed.get('error', '')}")
+            return
+        if not edited_parsed.get("text") or len(edited_parsed.get("text", "")) < 20:
+            st.error(f"Could not read the edited file. {edited_parsed.get('error', '')}")
+            return
+        result = compare_versions(original_parsed["text"], edited_parsed["text"])
+    st.success("Comparison complete.")
+    st.markdown("#### Silent edit score")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Similarity", f"{result['similarity']}%")
+    m2.metric("Changed content", f"{result['change_pct']}%")
+    m3.metric("Edit level", result["level"])
+    m4.metric("Suggested score", f"{result['score']} / 100")
+    st.markdown(f'''<div class="score-hero"><div class="score-num">{result['score']}<span class="score-den"> / 100</span></div><div class="score-grade">Suggested deduction: −{result['suggested_deduction']} pts</div><div class="score-verdict">This score is based on the amount and type of silent edits. Treat it as a guide, not as a final editorial judgement.</div></div>''', unsafe_allow_html=True)
+    st.markdown("#### Edit breakdown")
+    b1, b2, b3, b4, b5 = st.columns(5)
+    b1.metric("Original words", result["original_word_count"])
+    b2.metric("Edited words", result["edited_word_count"])
+    b3.metric("Added words", result["added_words_count"])
+    b4.metric("Deleted words", result["deleted_words_count"])
+    b5.metric("Rewritten words", result["rewritten_words_count"])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Possible factual/data edits", result["factual_edits"])
+    c2.metric("Possible missing-info edits", result["missing_info_edits"])
+    c3.metric("Grammar/style edits", result["grammar_edits"])
+    c4.metric("General rewrites", result["rewrite_edits"])
+    st.divider()
+    st.markdown(f"#### Detected changes — showing {len(result['change_items'])} of {result['total_change_items']}")
+    if not result["change_items"]:
+        st.caption("No meaningful differences found.")
+    else:
+        for idx, item in enumerate(result["change_items"], 1):
+            render_change_card(item, idx)
+    st.divider()
+    if st.button("Save comparison to dashboard", use_container_width=True):
+        sub = {"date": datetime.now().strftime("%d %b %Y %H:%M"), "platform": "Silent Edit", "writer": writer_name or "Unknown writer", "editor_name": editor_name, "title": title or "Silent edit comparison", "content_type": "Version comparison", "language": "English" if re.search(r"[A-Za-z]", edited_parsed["text"][:500]) else "Arabic", "word_count": result["edited_word_count"], "headings": edited_parsed.get("headings", []), "links": edited_parsed.get("links", []), "comments": [], "qa": {"scores": {cat: {"score": mx, "feedback": "Silent edit comparison mode.", "comment_refs": []} for cat, mx in CAT_MAX.items()}, "total": result["score"], "overall_feedback": f"Silent edit comparison detected {result['change_pct']}% changed content. Edit level: {result['level']}.", "key_strengths": [], "areas_for_improvement": [f"Review {result['total_change_items']} detected silent changes."], "suggestions": []}, "plagiarism": {"percentage": 0, "flagged_sources": [], "flagged_sentences": [], "source": "not checked", "status": "safe"}, "plag_snippets": [], "plag_sources": [], "ai_detection": {"ai_pct": 0, "human_pct": 100, "source": "not checked", "ai_sentences": [], "status": "safe"}, "deductions": {"base_score": 100, "comment_count": 0, "comment_deduction": result["suggested_deduction"], "classified": [], "plag_pct": 0, "plag_brackets": 0, "plag_deduction": 0, "ai_pct": 0, "ai_brackets": 0, "ai_deduction": 0, "final_score": result["score"]}, "qa_score": result["score"], "plagiarism_pct": 0, "ai_pct": 0, "recommendation": get_recommendation(result["score"]), "editor_decision": "", "editor_notes": "", "silent_edit_result": result}
+        st.session_state.submissions.append(sub)
+        save_record(sub)
+        st.success("Silent edit comparison saved to dashboard.")
 # ── Dashboard ──────────────────────────────────────────────────────────────
 def _score_color(s): return "#059669" if s >= 80 else "#d97706" if s >= 60 else "#dc2626"
 def _dec_class(d):   return {"Approve":"dec-approve","Request revision":"dec-revise","Reject":"dec-reject"}.get(d,"dec-pending")
@@ -1033,8 +1180,12 @@ def main():
     if "submissions" not in st.session_state:
         st.session_state.submissions = load_records()
     page = sidebar()
-    if "Submit" in page: page_submit()
-    else:                page_dashboard()
+    if "Submit" in page:
+        page_submit()
+    elif "Silent" in page:
+        page_silent_detection()
+    else:
+        page_dashboard()
 
 if __name__ == "__main__":
     main()
