@@ -1,713 +1,68 @@
+import streamlit as stimport jsonimport reimport mathimport osimport urllib.requestimport urllib.errorfrom datetime import datetimefrom io import BytesIO
 
+try:from groq import GroqGROQ_OK = Trueexcept ImportError:GROQ_OK = False
 
+try:from docx import DocumentDOCX_OK = Trueexcept ImportError:DOCX_OK = False
 
+try:import pdfplumberPDF_OK = Trueexcept ImportError:PDF_OK = False
 
-Pasted text(136).txt
-Document
+st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",initial_sidebar_state="expanded")
 
+PLATFORMS     = ["Bayut", "Dubizzle"]CONTENT_TYPES = ["Landing page", "Blog post", "Property guide"]LANGUAGES     = ["English", "Arabic"]
 
-for example i have a google doc, the writer wrote and editor edited thing without comments, can these edits be detected and scored 
+CAT_MAX = {"Content Quality":    25,"SEO & Structure":    20,"Language & Grammar": 20,"Brand Voice":        15,"Readability & Flow": 10,"Originality":        10,}
 
-tell me before editing the apy
-Show more
+GRADE_MAP = [(90, "A — Excellent"),(80, "B — Good"),(70, "C — Needs revision"),(60, "D — Major revision"),(0,  "F — Reject"),]
 
-Thought for a couple of seconds
-Yes, but only in specific cases.
+AI_PHRASES = ["in conclusion","it is worth noting","it is important to note","delve into","in the realm of","furthermore","moreover","needless to say","leverage","utilize","seamlessly","it goes without saying","in today's","one such","robust","cutting-edge","state-of-the-art","at the end of the day","effortlessly blends","embody contemporary elegance","functional vitality","architectural lines","expansive glazing",]
 
-Your current app can already detect and score comments inside a .docx file. It extracts comments from word/comments.xml, then deducts points based on comment type: Data accuracy −1.5, Missing info −1.5, and Grammar / rephrasing −1. It does not currently detect silent edits made without comments. 
+BROCHURE_PHRASES = ["wellness-oriented","highly anticipated","masterplan","effortlessly blends","distinguished residential","dynamic enclave","lush landscaped buffers","signature communal","elevated everyday living","embody contemporary elegance","functional vitality","architectural lines","expansive glazing","highly customisable aesthetic","light and dark material finishes","open-plan configurations","smart-home integrations","forward-looking environmental","eco-living standards","dark sky-compliant","energy-efficient building methods","smart irrigation","pedestrian-friendly trails","responsible, sustainable and healthy","certainly. here are","amenities mentioned in the brochure","define the next chapter","dynamic urban living","tranquillity of expansive greenery","wellness-oriented enclave","eco-friendly spaces","self-sustaining","immersive community experience","active design principles","modern sanctuary","lush landscape of parks","culture, leisure and active","fabric of daily life","peaceful seclusion","dynamic pulse","world-class community amenities","premium off-plan homes","strategically located","seamless connectivity","metropolitan accessibility","opulent master suite","contemporary elegance","smart-home integration","lush landscape","boasts","unparalleled","premium lifestyle","setting the benchmark",]
 
-
-For Google Docs:
-
-1. If the editor used comments
-Yes — export the Google Doc as .docx, upload it, and the app can detect the comments and score them.
-
-2. If the editor edited directly without comments
-Not reliably from a normal exported Google Doc.
-
-Google Docs keeps version history, but when you download/export the final doc, the silent edits are usually merged into the final text. Your app will only see the final version, not “what changed”.
-
-3. How silent edits can be detected
-You need two versions:
-
-Writer’s original version
-
-Editor’s final edited version
-
-Then the app can compare both texts and detect:
-
-deleted sentences
-
-added sentences
-
-changed paragraphs
-
-heavy rewriting
-
-grammar/style edits
-
-factual edits if paired with source checking
-
-Then you can score based on edit volume and edit type.
-
-Best approach for your app
-Add a new mode:
-
-“Compare writer draft vs edited draft”
-
-Upload:
-
-Original writer file
-
-Edited file
-
-Then the app calculates something like:
-
-Minor edits: punctuation, wording, grammar
-
-Medium edits: sentence restructuring, missing details added
-
-Major edits: factual correction, deleted wrong information, rewritten paragraphs
-
-Score impact: based on percentage changed + type of change
-
-Example scoring logic:
-
-0–10% changed → small deduction
-
-10–25% changed → medium deduction
-
-25%+ changed → major deduction
-
-factual corrections → higher deduction
-
-only punctuation/grammar → lower deduction
-
-My recommendation
-Do not try to detect silent edits from only one final Google Doc. It will not be accurate.
-
-The correct feature is:
-
-Upload Original Draft + Edited Draft → Detect Changes → Score Writer
-
-This would be much more fair and useful than relying only on comments.
-
-
-ok let's test
-
-3. How silent edits can be detected
-
-You need two versions:
-
-Writer’s original version
-Editor’s final edited version
-Show more
-
-Thought for 4s
-Yes. For testing, use this simple flow first:
-
-Upload 2 files:
-
-Writer’s original version
-
-Editor’s edited version
-
-Then the app compares both and shows:
-
-Added text
-
-Deleted text
-
-Similarity %
-
-Change level: Minor / Medium / Major
-
-Suggested deduction
-
-Your current app only scores .docx editor comments extracted from the file, not silent edits. 
-
- So this test should be added as a new comparison mode.
-
-Add this temporary function to your app:
-
-import difflib
-import re
-
-def normalize_text(text):
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def compare_versions(original_text, edited_text):
-    original = normalize_text(original_text)
-    edited = normalize_text(edited_text)
-
-    similarity = difflib.SequenceMatcher(None, original, edited).ratio()
-    change_pct = round((1 - similarity) * 100, 1)
-
-    original_words = original.split()
-    edited_words = edited.split()
-
-    diff = list(difflib.ndiff(original_words, edited_words))
-
-    deleted = [w[2:] for w in diff if w.startswith("- ")]
-    added = [w[2:] for w in diff if w.startswith("+ ")]
-
-    if change_pct <= 10:
-        level = "Minor edits"
-        deduction = 2
-    elif change_pct <= 25:
-        level = "Medium edits"
-        deduction = 5
-    else:
-        level = "Major edits"
-        deduction = 10
-
-    return {
-        "similarity": round(similarity * 100, 1),
-        "change_pct": change_pct,
-        "level": level,
-        "deduction": deduction,
-        "added_words": added[:80],
-        "deleted_words": deleted[:80],
-    }
-Then inside your submit page, add a quick test section like this:
-
-st.markdown("### Test Silent Edit Detection")
-
-original_file = st.file_uploader(
-    "Upload writer original version",
-    type=["docx", "pdf", "txt"],
-    key="original_version"
-)
-
-edited_file = st.file_uploader(
-    "Upload editor final version",
-    type=["docx", "pdf", "txt"],
-    key="edited_version"
-)
-
-if original_file and edited_file:
-    original_parsed = parse_file(original_file)
-    edited_parsed = parse_file(edited_file)
-
-    result = compare_versions(original_parsed["text"], edited_parsed["text"])
-
-    st.metric("Similarity", f"{result['similarity']}%")
-    st.metric("Changed Content", f"{result['change_pct']}%")
-    st.metric("Edit Level", result["level"])
-    st.metric("Suggested Deduction", f"-{result['deduction']} pts")
-
-    st.markdown("#### Added words / phrases")
-    st.write(" ".join(result["added_words"]))
-
-    st.markdown("#### Deleted words / phrases")
-    st.write(" ".join(result["deleted_words"]))
-For the first test, keep it simple: upload two .txt or .docx files with small differences. Once it works, we can make the scoring smarter by classifying edits into grammar, missing info, data accuracy, and major rewrites.
-
-
-edit full apy
-
-I’ll update your app so it has a proper Silent Edit Detection mode with two uploads: writer original + editor final. I’ll keep your current comment-based QA flow, but add comparison scoring as a separate path.
-
-I found your current app structure: it already parses .docx, .pdf, and .txt, extracts DOCX comments, then scores from comments, plagiarism, and AI heuristics. I’m adding the new two-file comparison mode without breaking that flow.
-
-
-finished?
-finished?
-
-Thought for 13s
-Not fully finished — the full app code was too long and got cut while I was preparing it.
-
-Do not replace your app yet. The current version I was generating may be incomplete.
-
-Your existing app already has the needed file parser structure for .docx, .pdf, and .txt, and it already extracts DOCX comments for scoring. 
-
-
-The safest next step is: I’ll give you the edit in copy-paste blocks, not the full app, so you can add the silent edit feature without breaking the current QA system.
-
-Start with this small change:
-
-1. Add this import at the top
-import difflib
-2. Add this full section after parse_file(f)
-# ── Silent edit detection ──────────────────────────────────────────────────
-
-def normalize_text(text):
-    text = text or ""
-    text = text.replace("\u00a0", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def classify_changed_text(text):
-    low = text.lower()
-
-    data_keywords = [
-        "wrong", "incorrect", "correct", "source", "price", "aed", "handover",
-        "developer", "location", "bedroom", "bedrooms", "apartment", "villa",
-        "townhouse", "floor", "payment", "plan", "date", "minutes", "mins",
-        "dld", "dubai land department", "fact", "data",
-        "غرفة", "غرف", "درهم", "تسليم", "المطور", "الموقع",
-        "دائرة الأراضي", "خطة السداد",
-    ]
-
-    missing_keywords = [
-        "also", "including", "features", "amenities", "offers", "provides",
-        "located", "near", "close to", "include", "mention", "available",
-        "يضم", "تشمل", "توفر", "يقع", "بالقرب", "مرافق", "مزايا",
-    ]
-
-    grammar_keywords = [
-        "the", "a", "an", "and", "or", "which", "that", "is", "are",
-        "was", "were", "من", "في", "على", "إلى", "عن", "هذا", "هذه",
-        "التي", "الذي",
-    ]
-
-    if any(k in low for k in data_keywords):
-        return "Possible factual/data edit", 2.0
-    if any(k in low for k in missing_keywords):
-        return "Possible missing-info edit", 1.5
-    if any(k in low for k in grammar_keywords):
-        return "Grammar/style edit", 0.5
-
-    return "General rewrite", 1.0
-
-
-def compare_versions(original_text, edited_text):
-    original = normalize_text(original_text)
-    edited = normalize_text(edited_text)
-
-    original_words = original.split()
-    edited_words = edited.split()
-
-    similarity = difflib.SequenceMatcher(None, original_words, edited_words).ratio()
-    similarity_pct = round(similarity * 100, 1)
-    change_pct = round(100 - similarity_pct, 1)
-
-    sm = difflib.SequenceMatcher(None, original_words, edited_words)
-
-    added_words_count = 0
-    deleted_words_count = 0
-    rewritten_words_count = 0
-    change_items = []
-
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        old_chunk = " ".join(original_words[i1:i2]).strip()
-        new_chunk = " ".join(edited_words[j1:j2]).strip()
-
-        if tag == "equal":
-            continue
-
-        if tag == "insert":
-            added_words_count += j2 - j1
-            label, pts = classify_changed_text(new_chunk)
-            change_items.append({
-                "type": "Added",
-                "category": label,
-                "deduction_weight": pts,
-                "old": "",
-                "new": new_chunk[:500],
-                "word_count": j2 - j1,
-            })
-
-        elif tag == "delete":
-            deleted_words_count += i2 - i1
-            label, pts = classify_changed_text(old_chunk)
-            change_items.append({
-                "type": "Deleted",
-                "category": label,
-                "deduction_weight": pts,
-                "old": old_chunk[:500],
-                "new": "",
-                "word_count": i2 - i1,
-            })
-
-        elif tag == "replace":
-            rewritten_words_count += max(i2 - i1, j2 - j1)
-            label_old, pts_old = classify_changed_text(old_chunk)
-            label_new, pts_new = classify_changed_text(new_chunk)
-            label = label_old if pts_old >= pts_new else label_new
-            pts = max(pts_old, pts_new)
-            change_items.append({
-                "type": "Rewritten",
-                "category": label,
-                "deduction_weight": pts,
-                "old": old_chunk[:500],
-                "new": new_chunk[:500],
-                "word_count": max(i2 - i1, j2 - j1),
-            })
-
-    factual_edits = sum(1 for x in change_items if x["category"] == "Possible factual/data edit")
-    missing_info_edits = sum(1 for x in change_items if x["category"] == "Possible missing-info edit")
-    grammar_edits = sum(1 for x in change_items if x["category"] == "Grammar/style edit")
-    rewrite_edits = sum(1 for x in change_items if x["category"] == "General rewrite")
-
-    if change_pct <= 5:
-        level = "Very minor edits"
-        base_deduction = 1
-    elif change_pct <= 10:
-        level = "Minor edits"
-        base_deduction = 2
-    elif change_pct <= 25:
-        level = "Medium edits"
-        base_deduction = 5
-    elif change_pct <= 45:
-        level = "Major edits"
-        base_deduction = 10
-    else:
-        level = "Heavy rewrite"
-        base_deduction = 15
-
-    issue_bonus = min((factual_edits * 1.5) + (missing_info_edits * 1.0), 10)
-    suggested_deduction = min(round(base_deduction + issue_bonus, 1), 25)
-    final_score = max(0, round(100 - suggested_deduction, 1))
-
-    return {
-        "similarity": similarity_pct,
-        "change_pct": change_pct,
-        "level": level,
-        "score": final_score,
-        "suggested_deduction": suggested_deduction,
-        "original_word_count": len(original_words),
-        "edited_word_count": len(edited_words),
-        "added_words_count": added_words_count,
-        "deleted_words_count": deleted_words_count,
-        "rewritten_words_count": rewritten_words_count,
-        "factual_edits": factual_edits,
-        "missing_info_edits": missing_info_edits,
-        "grammar_edits": grammar_edits,
-        "rewrite_edits": rewrite_edits,
-        "change_items": change_items[:40],
-        "total_change_items": len(change_items),
-    }
-This is the core engine. Next, add the Streamlit page/UI for uploading the two files.
-
-
-just give me the full apy 
-
-I’ll give you a full replacement app.py. I’ll keep it practical: same QA system + a new sidebar mode called Silent edit detection for original-vs-edited comparison.
-
-Thought for 2m 17s
-Finished. I made the full replacement app with the new Silent Edit Detection mode added.
-
-Download it here:
-
-app_with_silent_edit_detection.py
-
-What I added:
-
-New sidebar option: Silent edit detection
-
-Upload 2 files:
-
-Writer original version
-
-Editor final version
-
-Compares both versions
-
-Shows similarity %
-
-Shows changed content %
-
-Detects added, deleted, and rewritten words
-
-Classifies edits as:
-
-Possible factual/data edit
-
-Possible missing-info edit
-
-Grammar/style edit
-
-General rewrite
-
-Gives a suggested score and deduction
-
-Can save the comparison to the dashboard
-
-I kept your existing QA flow, including the DOCX comment extraction and scoring logic. Your original app already scored based on extracted editor comments from .docx files. 
-
-
-
-
-
-import streamlit as st
-import json
-import re
-import math
-import os
-import urllib.request
-import urllib.error
-from datetime import datetime
-from io import BytesIO
-
-try:
-from groq import Groq
-GROQ_OK = True
-except ImportError:
-GROQ_OK = False
-
-try:
-from docx import Document
-DOCX_OK = True
-except ImportError:
-DOCX_OK = False
-
-try:
-import pdfplumber
-PDF_OK = True
-except ImportError:
-PDF_OK = False
-
-st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",
-initial_sidebar_state="expanded")
-
-PLATFORMS = ["Bayut", "Dubizzle"]
-CONTENT_TYPES = ["Landing page", "Blog post", "Property guide"]
-LANGUAGES = ["English", "Arabic"]
-
-CAT_MAX = {
-"Content Quality": 25,
-"SEO & Structure": 20,
-"Language & Grammar": 20,
-"Brand Voice": 15,
-"Readability & Flow": 10,
-"Originality": 10,
-}
-
-GRADE_MAP = [
-(90, "A — Excellent"),
-(80, "B — Good"),
-(70, "C — Needs revision"),
-(60, "D — Major revision"),
-(0, "F — Reject"),
-]
-
-AI_PHRASES = [
-"in conclusion","it is worth noting","it is important to note","delve into",
-"in the realm of","furthermore","moreover","needless to say","leverage",
-"utilize","seamlessly","it goes without saying","in today's","one such","robust",
-"cutting-edge","state-of-the-art","at the end of the day","effortlessly blends",
-"embody contemporary elegance","functional vitality","architectural lines","expansive glazing",
-]
-
-BROCHURE_PHRASES = [
-"wellness-oriented","highly anticipated","masterplan","effortlessly blends",
-"distinguished residential","dynamic enclave","lush landscaped buffers",
-"signature communal","elevated everyday living","embody contemporary elegance",
-"functional vitality","architectural lines","expansive glazing",
-"highly customisable aesthetic","light and dark material finishes",
-"open-plan configurations","smart-home integrations","forward-looking environmental",
-"eco-living standards","dark sky-compliant","energy-efficient building methods",
-"smart irrigation","pedestrian-friendly trails","responsible, sustainable and healthy",
-"certainly. here are","amenities mentioned in the brochure","define the next chapter",
-"dynamic urban living","tranquillity of expansive greenery","wellness-oriented enclave",
-"eco-friendly spaces","self-sustaining","immersive community experience",
-"active design principles","modern sanctuary","lush landscape of parks",
-"culture, leisure and active","fabric of daily life","peaceful seclusion",
-"dynamic pulse","world-class community amenities","premium off-plan homes",
-"strategically located","seamless connectivity","metropolitan accessibility",
-"opulent master suite","contemporary elegance","smart-home integration",
-"lush landscape","boasts","unparalleled","premium lifestyle","setting the benchmark",
-]
-
-KNOWN_DOMAINS = [
-"emaar.com","nakheel.com","damac.com","aldar.com","meraas.com",
-"sobha.com","omniyat.com","ellington.ae","azizi.ae",
-]
+KNOWN_DOMAINS = ["emaar.com","nakheel.com","damac.com","aldar.com","meraas.com","sobha.com","omniyat.com","ellington.ae","azizi.ae",]
 
 RECORDS_FILE = "qa_records.json"
 
 ── Local persistence ──────────────────────────────────────────────────────
-def load_records():
-if not os.path.exists(RECORDS_FILE):
-return []
-try:
-with open(RECORDS_FILE, "r", encoding="utf-8") as f:
-return json.load(f)
-except Exception:
-return []
 
-def save_record(sub):
-records = load_records()
-key = (sub["writer"], sub["title"], sub["date"])
-for r in records:
-if (r["writer"], r["title"], r["date"]) == key:
-return
-records.append(_serialisable(sub))
-with open(RECORDS_FILE, "w", encoding="utf-8") as f:
-json.dump(records, f, ensure_ascii=False, indent=2)
+def load_records():if not os.path.exists(RECORDS_FILE):return []try:with open(RECORDS_FILE, "r", encoding="utf-8") as f:return json.load(f)except Exception:return []
 
-def update_record_decision(sub):
-records = load_records()
-key = (sub["writer"], sub["title"], sub["date"])
-for r in records:
-if (r["writer"], r["title"], r["date"]) == key:
-r["editor_decision"] = sub.get("editor_decision", "")
-r["editor_notes"] = sub.get("editor_notes", "")
-break
-with open(RECORDS_FILE, "w", encoding="utf-8") as f:
-json.dump(records, f, ensure_ascii=False, indent=2)
+def save_record(sub):records = load_records()key = (sub["writer"], sub["title"], sub["date"])for r in records:if (r["writer"], r["title"], r["date"]) == key:returnrecords.append(_serialisable(sub))with open(RECORDS_FILE, "w", encoding="utf-8") as f:json.dump(records, f, ensure_ascii=False, indent=2)
 
-def _serialisable(obj):
-if isinstance(obj, dict): return {k: _serialisable(v) for k, v in obj.items()}
-if isinstance(obj, (list, tuple)): return [_serialisable(i) for i in obj]
-if isinstance(obj, (str, int, float, bool)) or obj is None: return obj
-return str(obj)
+def update_record_decision(sub):records = load_records()key = (sub["writer"], sub["title"], sub["date"])for r in records:if (r["writer"], r["title"], r["date"]) == key:r["editor_decision"] = sub.get("editor_decision", "")r["editor_notes"]    = sub.get("editor_notes", "")breakwith open(RECORDS_FILE, "w", encoding="utf-8") as f:json.dump(records, f, ensure_ascii=False, indent=2)
+
+def _serialisable(obj):if isinstance(obj, dict):          return {k: _serialisable(v) for k, v in obj.items()}if isinstance(obj, (list, tuple)): return [_serialisable(i) for i in obj]if isinstance(obj, (str, int, float, bool)) or obj is None: return objreturn str(obj)
 
 ── CSS ────────────────────────────────────────────────────────────────────
-def inject_css():
-st.markdown("""
+
+def inject_css():st.markdown("""
 
 """, unsafe_allow_html=True)
 
 ── Groq AI ────────────────────────────────────────────────────────────────
+
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
 
-def call_ai(prompt, max_retries=3):
-"""Call Groq with model fallback and retry on empty responses."""
-if not GROQ_OK:
-raise Exception("groq package not installed")
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-last_err = "No models attempted"
-for model in GROQ_MODELS:
-for attempt in range(max_retries):
-try:
-resp = client.chat.completions.create(
-model=model,
-messages=[{"role": "user", "content": prompt}],
-temperature=0.3,
-max_tokens=2000,
-)
-text = resp.choices[0].message.content
-if text and text.strip():
-return text.strip()
-last_err = f"{model}: empty response (attempt {attempt + 1})"
-except Exception as e:
-last_err = f"{model}: {e}"
-if any(x in str(e).lower() for x in ["model", "not found", "decommission"]):
-break
-raise Exception(f"All Groq models failed. Last: {last_err}")
+def call_ai(prompt, max_retries=3):"""Call Groq with model fallback and retry on empty responses."""if not GROQ_OK:raise Exception("groq package not installed")client   = Groq(api_key=st.secrets["GROQ_API_KEY"])last_err = "No models attempted"for model in GROQ_MODELS:for attempt in range(max_retries):try:resp = client.chat.completions.create(model=model,messages=[{"role": "user", "content": prompt}],temperature=0.3,max_tokens=2000,)text = resp.choices[0].message.contentif text and text.strip():return text.strip()last_err = f"{model}: empty response (attempt {attempt + 1})"except Exception as e:last_err = f"{model}: {e}"if any(x in str(e).lower() for x in ["model", "not found", "decommission"]):breakraise Exception(f"All Groq models failed. Last: {last_err}")
 
-def parse_json_response(raw):
-"""Extract and parse the first JSON object from a model response."""
-if not raw or not raw.strip():
-return None
-clean = re.sub(r"json\s*|\s*", "", raw).strip()
-m = re.search(r'{.*}', clean, re.DOTALL)
-if m:
-clean = m.group(0)
-try:
-return json.loads(clean)
-except Exception:
-try:
-return json.loads(raw.strip())
-except Exception:
-return None
+def parse_json_response(raw):"""Extract and parse the first JSON object from a model response."""if not raw or not raw.strip():return Noneclean = re.sub(r"json\s*|\s*", "", raw).strip()m = re.search(r'{.*}', clean, re.DOTALL)if m:clean = m.group(0)try:return json.loads(clean)except Exception:try:return json.loads(raw.strip())except Exception:return None
 
 ── File parsers ───────────────────────────────────────────────────────────
-def extract_docx(raw):
-if not DOCX_OK:
-return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "python-docx not installed"}
-import zipfile
-from lxml import etree as _etree
-doc = Document(BytesIO(raw))
-text, headings, links = [], [], []
-for p in doc.paragraphs:
-t = p.text.strip()
-if not t: continue
-text.append(t)
-s = p.style.name
-if s.startswith("Heading 1"): headings.append({"level": "H1", "text": t})
-elif s.startswith("Heading 2"): headings.append({"level": "H2", "text": t})
-elif s.startswith("Heading 3"): headings.append({"level": "H3", "text": t})
-for rel in doc.part.rels.values():
-if "hyperlink" in rel.reltype: links.append(rel._target)
-comments = []
-try:
-WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-with zipfile.ZipFile(BytesIO(raw)) as z:
-if "word/comments.xml" in z.namelist():
-root = _etree.fromstring(z.read("word/comments.xml"))
-all_c = root.findall(f".//{{{WNS}}}comment")
-reply_ids = set()
-if "word/commentsExtended.xml" in z.namelist():
-W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
-er = _etree.fromstring(z.read("word/commentsExtended.xml"))
-for ext in er.findall(f".//{{{W15}}}commentEx"):
-if ext.get(f"{{{W15}}}paraIdParent"):
-cid = ext.get(f"{{{W15}}}id", "")
-if cid: reply_ids.add(cid)
-for c in all_c:
-cid = c.get(f"{{{WNS}}}id", "")
-author = c.get(f"{{{WNS}}}author", "Editor")
-body = " ".join(c.itertext()).strip()
-if body and cid not in reply_ids:
-comments.append({"author": author, "text": body})
-except Exception:
-pass
-full = "\n".join(text)
-return {"text": full, "headings": headings, "links": links, "comments": comments,
-"word_count": len(full.split()), "error": ""}
 
-def extract_pdf(raw):
-if not PDF_OK:
-return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "pdfplumber not installed"}
-parts, links = [], []
-with pdfplumber.open(BytesIO(raw)) as pdf:
-for page in pdf.pages:
-t = page.extract_text()
-if t: parts.append(t)
-for a in (page.annots or []):
-u = a.get("uri")
-if u: links.append(u)
-full = "\n".join(parts)
-return {"text": full, "headings": [], "links": links, "comments": [], "word_count": len(full.split()), "error": ""}
+def extract_docx(raw):if not DOCX_OK:return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "python-docx not installed"}import zipfilefrom lxml import etree as _etreedoc = Document(BytesIO(raw))text, headings, links = [], [], []for p in doc.paragraphs:t = p.text.strip()if not t: continuetext.append(t)s = p.style.nameif   s.startswith("Heading 1"): headings.append({"level": "H1", "text": t})elif s.startswith("Heading 2"): headings.append({"level": "H2", "text": t})elif s.startswith("Heading 3"): headings.append({"level": "H3", "text": t})for rel in doc.part.rels.values():if "hyperlink" in rel.reltype: links.append(rel._target)comments = []try:WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"with zipfile.ZipFile(BytesIO(raw)) as z:if "word/comments.xml" in z.namelist():root  = _etree.fromstring(z.read("word/comments.xml"))all_c = root.findall(f".//{{{WNS}}}comment")reply_ids = set()if "word/commentsExtended.xml" in z.namelist():W15 = "http://schemas.microsoft.com/office/word/2012/wordml"er  = _etree.fromstring(z.read("word/commentsExtended.xml"))for ext in er.findall(f".//{{{W15}}}commentEx"):if ext.get(f"{{{W15}}}paraIdParent"):cid = ext.get(f"{{{W15}}}id", "")if cid: reply_ids.add(cid)for c in all_c:cid    = c.get(f"{{{WNS}}}id", "")author = c.get(f"{{{WNS}}}author", "Editor")body   = " ".join(c.itertext()).strip()if body and cid not in reply_ids:comments.append({"author": author, "text": body})except Exception:passfull = "\n".join(text)return {"text": full, "headings": headings, "links": links, "comments": comments,"word_count": len(full.split()), "error": ""}
 
-def extract_txt(raw):
-full = raw.decode("utf-8", errors="ignore")
-return {"text": full, "headings": [], "links": re.findall(r'https?://\S+', full),
-"comments": [], "word_count": len(full.split()), "error": ""}
+def extract_pdf(raw):if not PDF_OK:return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "pdfplumber not installed"}parts, links = [], []with pdfplumber.open(BytesIO(raw)) as pdf:for page in pdf.pages:t = page.extract_text()if t: parts.append(t)for a in (page.annots or []):u = a.get("uri")if u: links.append(u)full = "\n".join(parts)return {"text": full, "headings": [], "links": links, "comments": [], "word_count": len(full.split()), "error": ""}
 
-def parse_file(f):
-raw = f.getvalue(); name = f.name.lower()
-if name.endswith(".docx"): return extract_docx(raw)
-elif name.endswith(".pdf"): return extract_pdf(raw)
-else: return extract_txt(raw)
+def extract_txt(raw):full = raw.decode("utf-8", errors="ignore")return {"text": full, "headings": [], "links": re.findall(r'https?://\S+', full),"comments": [], "word_count": len(full.split()), "error": ""}
+
+def parse_file(f):raw  = f.getvalue(); name = f.name.lower()if   name.endswith(".docx"): return extract_docx(raw)elif name.endswith(".pdf"):  return extract_pdf(raw)else:                        return extract_txt(raw)
 
 ── Deterministic scoring ──────────────────────────────────────────────────
-ALL numbers that affect the final score are computed here — no AI involved.
-def classify_comment(text):
-"""Keyword-based classification — always returns the same result for the same text."""
-low = text.lower()
-for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's",
-"the source","in the source","copied","from google","from maps","url goes","link goes",
-"apartments","no apartments","mins away","minutes away","under construction","off-plan","data","fact"]:
-if kw in low: return "Data accuracy", 1.5
-for kw in ["missing","add","please add","include","mention","not mentioned","should mention",
-"we need","please mention","go through","available","please write","notable projects",
-"specific","more details","lacks","header","section"]:
-if kw in low: return "Missing info", 1.5
-for kw in ["grammar","rephrase","rewrite","word","sentence","phrasing","general","too general",
-"vague","unclear","confusing","brand voice","tone","style","read","sounds"]:
-if kw in low: return "Grammar / rephrasing", 1.0
-return "Grammar / rephrasing", 1.0
 
-def plag_heuristic(text, links):
-"""
-Deterministic plagiarism score based on BROCHURE_PHRASES keyword hits.
-Returns (percentage, flagged_snippets).
-Same file always → same score.
-"""
-flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
-text_lower = text.lower()
-hits = sum(1 for p in BROCHURE_PHRASES if p in text_lower)
-total = len(BROCHURE_PHRASES)
-base = int((math.sqrt(hits) / math.sqrt(max(total, 1))) * 60)
-source_bonus = min(len(flagged_sources) * 4, 15)
-pct = min(base + source_bonus, 100)
+ALL numbers that affect the final score are computed here — no AI involved.
+
+def classify_comment(text):"""Keyword-based classification — always returns the same result for the same text."""low = text.lower()for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's","the source","in the source","copied","from google","from maps","url goes","link goes","apartments","no apartments","mins away","minutes away","under construction","off-plan","data","fact"]:if kw in low: return "Data accuracy", 1.5for kw in ["missing","add","please add","include","mention","not mentioned","should mention","we need","please mention","go through","available","please write","notable projects","specific","more details","lacks","header","section"]:if kw in low: return "Missing info", 1.5for kw in ["grammar","rephrase","rewrite","word","sentence","phrasing","general","too general","vague","unclear","confusing","brand voice","tone","style","read","sounds"]:if kw in low: return "Grammar / rephrasing", 1.0return "Grammar / rephrasing", 1.0
+
+def plag_heuristic(text, links):"""Deterministic plagiarism score based on BROCHURE_PHRASES keyword hits.Returns (percentage, flagged_snippets).Same file always → same score."""flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]text_lower      = text.lower()hits            = sum(1 for p in BROCHURE_PHRASES if p in text_lower)total           = len(BROCHURE_PHRASES)base            = int((math.sqrt(hits) / math.sqrt(max(total, 1))) * 60)source_bonus    = min(len(flagged_sources) * 4, 15)pct             = min(base + source_bonus, 100)
 
 # Collect the actual snippets for display
 sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -720,31 +75,10 @@ for sent in sentences:
             seen.add(stripped); flagged.append(stripped[:280]); break
 
 return pct, flagged_sources, flagged[:8]
-def ai_heuristic(text):
-"""
-Deterministic AI-content score based on AI_PHRASES keyword hits.
-Same file always → same score.
-"""
-hits = sum(1 for p in AI_PHRASES if p in text.lower())
-pct = min(hits * 5, 60)
-snippets = []
-for sent in re.split(r'(?<=[.!?])\s+', text):
-if len(sent.strip()) < 35: continue
-if any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])
-if len(snippets) >= 5: break
-return pct, snippets
 
-def apply_deductions(comments, plag_pct, ai_pct):
-"""
-Final score = 100 − comment_deductions − plag_deduction − ai_deduction.
-100% deterministic — no AI involved.
-"""
-classified = []
-comment_deduction = 0.0
-for c in comments:
-ctype, pts = classify_comment(c["text"])
-classified.append({"author": c["author"], "text": c["text"], "type": ctype, "deduction": pts})
-comment_deduction += pts
+def ai_heuristic(text):"""Deterministic AI-content score based on AI_PHRASES keyword hits.Same file always → same score."""hits     = sum(1 for p in AI_PHRASES if p in text.lower())pct      = min(hits * 5, 60)snippets = []for sent in re.split(r'(?<=[.!?])\s+', text):if len(sent.strip()) < 35: continueif any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])if len(snippets) >= 5: breakreturn pct, snippets
+
+def apply_deductions(comments, plag_pct, ai_pct):"""Final score = 100 − comment_deductions − plag_deduction − ai_deduction.100% deterministic — no AI involved."""classified        = []comment_deduction = 0.0for c in comments:ctype, pts = classify_comment(c["text"])classified.append({"author": c["author"], "text": c["text"], "type": ctype, "deduction": pts})comment_deduction += pts
 
 plag_brackets  = int(plag_pct // 20); plag_deduction = plag_brackets * 5
 ai_brackets    = int(ai_pct   // 20); ai_deduction   = ai_brackets   * 5
@@ -763,58 +97,27 @@ return final, {
     "ai_deduction":      ai_deduction,
     "final_score":       final,
 }
-def get_recommendation(score):
-return "approve" if score >= 80 else "reject" if score < 60 else "revise"
 
-def get_grade(score):
-for t, label in GRADE_MAP:
-if score >= t: return label
-return GRADE_MAP[-1][1]
+def get_recommendation(score):return "approve" if score >= 80 else "reject" if score < 60 else "revise"
+
+def get_grade(score):for t, label in GRADE_MAP:if score >= t: return labelreturn GRADE_MAP[-1][1]
 
 ── AI — feedback text only (does not affect score) ────────────────────────
-def run_qa_feedback(title, content, writer, ctype, lang, platform, headings, links, comments):
-"""
-Calls Groq only to get human-readable feedback text and suggestions.
-The returned 'scores' are OVERRIDDEN by the deterministic scoring below —
-they are displayed per-category but do not change the final number.
-"""
-if not comments:
-scores = {cat: {"score": mx, "feedback": "No editor comments. Full marks awarded.", "comment_refs": []}
-for cat, mx in CAT_MAX.items()}
-return {"scores": scores, "total": sum(CAT_MAX.values()),
-"overall_feedback": "No editor comments found. All categories awarded full marks.",
-"key_strengths": [], "areas_for_improvement": [], "suggestions": []}
+
+def run_qa_feedback(title, content, writer, ctype, lang, platform, headings, links, comments):"""Calls Groq only to get human-readable feedback text and suggestions.The returned 'scores' are OVERRIDDEN by the deterministic scoring below —they are displayed per-category but do not change the final number."""if not comments:scores = {cat: {"score": mx, "feedback": "No editor comments. Full marks awarded.", "comment_refs": []}for cat, mx in CAT_MAX.items()}return {"scores": scores, "total": sum(CAT_MAX.values()),"overall_feedback": "No editor comments found. All categories awarded full marks.","key_strengths": [], "areas_for_improvement": [], "suggestions": []}
 
 c_txt = "\n".join(f"  Comment {i+1} [{c['author']}]: {c['text']}" for i, c in enumerate(comments))
 prompt = f"""You are a content QA evaluator for {platform} ({lang}).
+
 Article: "{title}" by {writer} ({ctype})
 
-Editor comments:
-{c_txt}
+Editor comments:{c_txt}
 
-Article excerpt:
-{content[:2000]}
+Article excerpt:{content[:2000]}
 
 Return ONLY a raw JSON object — no markdown, no explanation.
 
-{{
-"scores": {{
-"Content Quality": {{"score": <0-25>, "feedback": "", "comment_refs": []}},
-"SEO & Structure": {{"score": <0-20>, "feedback": "", "comment_refs": []}},
-"Language & Grammar": {{"score": <0-20>, "feedback": "", "comment_refs": []}},
-"Brand Voice": {{"score": <0-15>, "feedback": "", "comment_refs": []}},
-"Readability & Flow": {{"score": <0-10>, "feedback": "", "comment_refs": []}},
-"Originality": {{"score": <0-10>, "feedback": "", "comment_refs": []}}
-}},
-"total": ,
-"overall_feedback": "<2-3 sentence summary>",
-"key_strengths": [""],
-"areas_for_improvement": [""],
-"suggestions": [
-{{"number": 1, "action": "", "category": ""}},
-{{"number": 2, "action": "", "category": ""}}
-]
-}}
+{{"scores": {{"Content Quality":    {{"score": <0-25>, "feedback": "", "comment_refs": []}},"SEO & Structure":    {{"score": <0-20>, "feedback": "", "comment_refs": []}},"Language & Grammar": {{"score": <0-20>, "feedback": "", "comment_refs": []}},"Brand Voice":        {{"score": <0-15>, "feedback": "", "comment_refs": []}},"Readability & Flow": {{"score": <0-10>, "feedback": "", "comment_refs": []}},"Originality":        {{"score": <0-10>, "feedback": "", "comment_refs": []}}}},"total": ,"overall_feedback": "<2-3 sentence summary>","key_strengths": [""],"areas_for_improvement": [""],"suggestions": [{{"number": 1, "action": "", "category": ""}},{{"number": 2, "action": "", "category": ""}}]}}
 
 Rules: Score based ONLY on the editor comments. Categories not mentioned keep their maximum score."""
 
@@ -835,85 +138,22 @@ scores = {cat: {"score": mx, "feedback": "Manual review required — AI unavaila
 return {"scores": scores, "total": sum(CAT_MAX.values()),
         "overall_feedback": f"AI feedback unavailable. {len(comments)} editor comment(s) found; deductions applied automatically.",
         "key_strengths": [], "areas_for_improvement": [c["text"][:80] for c in comments[:3]], "suggestions": []}
-def get_plag_flagged_sentences(text):
-"""
-Ask Groq for which specific sentences look copied (display only).
-Result is never used for scoring.
-"""
-prompt = f"""Identify sentences copied from UAE real estate developer brochures.
-Return ONLY raw JSON: {{"flagged_sentences": [""]}}
-Flag only clear brochure language. Max 10 sentences.
-Article:
-{text[:4000]}"""
-try:
-raw = call_ai(prompt)
-result = parse_json_response(raw)
-if result:
-return result.get("flagged_sentences", [])[:10]
-except Exception:
-pass
-return []
 
-def get_ai_flagged_sentences(text):
-"""Ask GPTZero for AI sentences (display only). Falls back to heuristic list."""
-api_key = st.secrets.get("GPTZERO_API_KEY", "")
-if api_key and len(text.strip()) > 50:
-try:
-payload = json.dumps({"document": text[:10000], "version": "2025-01-09"}).encode("utf-8")
-req = urllib.request.Request(
-"https://api.gptzero.me/v2/predict/text", data=payload,
-headers={"Content-Type": "application/json", "Accept": "application/json", "x-api-key": api_key},
-method="POST")
-with urllib.request.urlopen(req, timeout=20) as resp:
-data = json.loads(resp.read().decode("utf-8"))
-doc = data.get("documents", [{}])[0]
-sents = doc.get("sentences", [])
-return [s.get("sentence", "") for s in sents
-if s.get("generated_prob", 0) > 0.5 and len(s.get("sentence", "")) > 30][:5]
-except Exception:
-pass
-# Heuristic fallback
-snippets = []
-for sent in re.split(r'(?<=[.!?])\s+', text):
-if len(sent.strip()) < 35: continue
-if any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])
-if len(snippets) >= 5: break
-return snippets
+def get_plag_flagged_sentences(text):"""Ask Groq for which specific sentences look copied (display only).Result is never used for scoring."""prompt = f"""Identify sentences copied from UAE real estate developer brochures.Return ONLY raw JSON: {{"flagged_sentences": [""]}}Flag only clear brochure language. Max 10 sentences.Article:{text[:4000]}"""try:raw    = call_ai(prompt)result = parse_json_response(raw)if result:return result.get("flagged_sentences", [])[:10]except Exception:passreturn []
 
-def highlight_plag(s):
-for phrase in BROCHURE_PHRASES:
-s = re.compile(re.escape(phrase), re.IGNORECASE).sub(
-lambda m: f'{m.group(0)}', s)
-return s
+def get_ai_flagged_sentences(text):"""Ask GPTZero for AI sentences (display only). Falls back to heuristic list."""api_key = st.secrets.get("GPTZERO_API_KEY", "")if api_key and len(text.strip()) > 50:try:payload = json.dumps({"document": text[:10000], "version": "2025-01-09"}).encode("utf-8")req = urllib.request.Request("https://api.gptzero.me/v2/predict/text", data=payload,headers={"Content-Type": "application/json", "Accept": "application/json", "x-api-key": api_key},method="POST")with urllib.request.urlopen(req, timeout=20) as resp:data = json.loads(resp.read().decode("utf-8"))doc      = data.get("documents", [{}])[0]sents    = doc.get("sentences", [])return [s.get("sentence", "") for s in sentsif s.get("generated_prob", 0) > 0.5 and len(s.get("sentence", "")) > 30][:5]except Exception:pass# Heuristic fallbacksnippets = []for sent in re.split(r'(?<=[.!?])\s+', text):if len(sent.strip()) < 35: continueif any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])if len(snippets) >= 5: breakreturn snippets
 
-def highlight_ai(s):
-for phrase in AI_PHRASES:
-s = re.compile(re.escape(phrase), re.IGNORECASE).sub(
-lambda m: f'{m.group(0)}', s)
-return s
+def highlight_plag(s):for phrase in BROCHURE_PHRASES:s = re.compile(re.escape(phrase), re.IGNORECASE).sub(lambda m: f'{m.group(0)}', s)return s
+
+def highlight_ai(s):for phrase in AI_PHRASES:s = re.compile(re.escape(phrase), re.IGNORECASE).sub(lambda m: f'{m.group(0)}', s)return s
 
 ── Sidebar ────────────────────────────────────────────────────────────────
-def sidebar():
-with st.sidebar:
-st.markdown('✦Content QAEditorial review', unsafe_allow_html=True)
-st.markdown('Navigation', unsafe_allow_html=True)
-page = st.radio("Navigation", ["📄 Submit article", "◫ Dashboard"],
-label_visibility="collapsed", key="sidebar_navigation")
-st.markdown('Deduction rules', unsafe_allow_html=True)
-st.markdown("""
-Data accuracy comment−1.5
-Missing info comment−1.5
-Grammar / rephrasing−1
-Plagiarism over 20%−5
-AI content over 20%−5
-""", unsafe_allow_html=True)
-return "Dashboard" if "Dashboard" in page else "Submit article"
+
+def sidebar():with st.sidebar:st.markdown('✦Content QAEditorial review', unsafe_allow_html=True)st.markdown('Navigation', unsafe_allow_html=True)page = st.radio("Navigation", ["📄  Submit article", "◫  Dashboard"],label_visibility="collapsed", key="sidebar_navigation")st.markdown('Deduction rules', unsafe_allow_html=True)st.markdown("""Data accuracy comment−1.5Missing info comment−1.5Grammar / rephrasing−1Plagiarism over 20%−5AI content over 20%−5""", unsafe_allow_html=True)return "Dashboard" if "Dashboard" in page else "Submit article"
 
 ── Submit page ────────────────────────────────────────────────────────────
-def page_submit():
-inject_css()
-st.markdown('✦ Editorial QA EngineContent QA SystemSubmit articles for automated review — editor comments, plagiarism, and AI detection.☑', unsafe_allow_html=True)
-main_col, side_col = st.columns([3.1, 1.05], gap="large")
+
+def page_submit():inject_css()st.markdown('✦ Editorial QA EngineContent QA SystemSubmit articles for automated review — editor comments, plagiarism, and AI detection.☑', unsafe_allow_html=True)main_col, side_col = st.columns([3.1, 1.05], gap="large")
 
 with main_col:
     st.markdown('<div class="stepper"><div class="step-item active"><span class="step-num">1</span><span>Details</span></div><div class="step-line"></div><div class="step-item"><span class="step-num">2</span><span>Upload</span></div><div class="step-line"></div><div class="step-item"><span class="step-num">3</span><span>Evaluation</span></div><div class="step-line"></div><div class="step-item"><span class="step-num">4</span><span>Report</span></div></div>', unsafe_allow_html=True)
@@ -940,8 +180,10 @@ with main_col:
                 ext     = upload.name.split(".")[-1].upper()
                 st.markdown(f'<div class="file-card"><div class="file-icon">▤</div><div><div class="file-title">{upload.name}</div><div class="file-meta">{ext} · {size_mb:.1f} MB</div></div><div class="file-status">● Uploaded</div></div>', unsafe_allow_html=True)
             st.markdown(f"""
+
 with side_col:
     st.markdown("""<div class="side-card">
+
 if not go:
     st.info("Upload a .docx with editor comments. Scores are based entirely on those comments.")
     return
@@ -1051,12 +293,10 @@ st.session_state.submissions.append(sub)
 save_record(sub)
 st.success(f"Evaluation complete — Final score: **{final_score} / 100**")
 render_report(sub)
+
 ── Report ─────────────────────────────────────────────────────────────────
-def render_report(sub):
-inject_css()
-qa = sub["qa"]; plag = sub["plagiarism"]; ai = sub["ai_detection"]; ded = sub["deductions"]
-score = sub["qa_score"]; grade = get_grade(score); rec = sub["recommendation"]
-plag_snippets = sub.get("plag_snippets", []); plag_sources = sub.get("plag_sources", [])
+
+def render_report(sub):inject_css()qa    = sub["qa"]; plag = sub["plagiarism"]; ai = sub["ai_detection"]; ded = sub["deductions"]score = sub["qa_score"]; grade = get_grade(score); rec = sub["recommendation"]plag_snippets = sub.get("plag_snippets", []); plag_sources = sub.get("plag_sources", [])
 
 st.divider()
 bdg_class   = "bdg-bay" if sub["platform"] == "Bayut" else "bdg-dub"
@@ -1188,16 +428,12 @@ if st.button("Confirm decision", type="primary", use_container_width=True,
         st.success(f"Decision saved: {decision}")
         if notes: st.info(f"Notes for {sub['writer']}: {notes}")
 st.caption(f"Content QA System — {sub['platform']} — Powered by Groq — {sub['date']}")
-── Dashboard ──────────────────────────────────────────────────────────────
-def _score_color(s): return "#059669" if s >= 80 else "#d97706" if s >= 60 else "#dc2626"
-def _dec_class(d): return {"Approve":"dec-approve","Request revision":"dec-revise","Reject":"dec-reject"}.get(d,"dec-pending")
 
-def page_dashboard():
-inject_css()
-st.markdown('OverviewDashboardAll evaluation records — persisted across sessions.📊', unsafe_allow_html=True)
-all_subs = st.session_state.get("submissions", [])
-if not all_subs:
-st.info("No evaluations yet. Submit an article to get started."); return
+── Dashboard ──────────────────────────────────────────────────────────────
+
+def _score_color(s): return "#059669" if s >= 80 else "#d97706" if s >= 60 else "#dc2626"def _dec_class(d):   return {"Approve":"dec-approve","Request revision":"dec-revise","Reject":"dec-reject"}.get(d,"dec-pending")
+
+def page_dashboard():inject_css()st.markdown('OverviewDashboardAll evaluation records — persisted across sessions.📊', unsafe_allow_html=True)all_subs = st.session_state.get("submissions", [])if not all_subs:st.info("No evaluations yet. Submit an article to get started."); return
 
 total     = len(all_subs)
 approved  = sum(1 for s in all_subs if s.get("editor_decision") == "Approve")
@@ -1252,18 +488,12 @@ for sub in reversed(filtered):
     editor_chip = f'<span class="meta-chip">👤 {sub["editor_name"]}</span>' if sub.get("editor_name") else ""
 
     st.markdown(f"""
+
     with st.expander("View full report"):
         render_report(sub)
+
 ── Main ───────────────────────────────────────────────────────────────────
-def main():
-if "submissions" not in st.session_state:
-st.session_state.submissions = load_records()
-page = sidebar()
-if "Submit" in page: page_submit()
-else: page_dashboard()
 
-if name == "main":
-main()
+def main():if "submissions" not in st.session_state:st.session_state.submissions = load_records()page = sidebar()if "Submit" in page: page_submit()else:                page_dashboard()
 
-
-Close
+if name == "main":main()
