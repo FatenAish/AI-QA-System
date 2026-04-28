@@ -248,9 +248,6 @@ div[class*="stTextInput"]>label,div[class*="stSelectbox"]>label,div[class*="stFi
 .timeline-num{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#5b5ce2,#7c3aed);color:white;font-weight:900;font-size:12px;display:flex;align-items:center;justify-content:center}
 .timeline-title{color:#111827;font-size:12px;font-weight:900;margin-bottom:2px}
 .timeline-sub{color:#64748b;font-size:11px;line-height:1.35}
-.preview-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.ring{width:62px;height:62px;border-radius:50%;margin:0 auto 8px auto;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle closest-side,white 72%,transparent 74%),conic-gradient(var(--ring-color) var(--ring-value),#eef2f7 0);color:#111827;font-size:13px;font-weight:900}
-.preview-label{text-align:center;color:#475569;font-size:11px;font-weight:700}
 .tip-box{background:#ecfdf5;border:1px solid #d1fae5;color:#065f46;border-radius:14px;padding:14px;font-size:12px;line-height:1.45}
 .tip-title{font-size:13px;font-weight:900;margin-bottom:4px}
 .file-card{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:12px 14px;margin-top:12px}
@@ -279,7 +276,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
 
 def call_ai(prompt, max_retries=3):
-    """Call Groq with automatic model fallback and retry on empty responses."""
+    """Call Groq with model fallback and retry on empty responses."""
     if not GROQ_OK:
         raise Exception("groq package not installed")
     client   = Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -300,12 +297,12 @@ def call_ai(prompt, max_retries=3):
             except Exception as e:
                 last_err = f"{model}: {e}"
                 if any(x in str(e).lower() for x in ["model", "not found", "decommission"]):
-                    break  # skip to next model
+                    break
     raise Exception(f"All Groq models failed. Last: {last_err}")
 
 
 def parse_json_response(raw):
-    """Robustly extract and parse the first JSON object from a model response."""
+    """Extract and parse the first JSON object from a model response."""
     if not raw or not raw.strip():
         return None
     clean = re.sub(r"```json\s*|```\s*", "", raw).strip()
@@ -319,20 +316,6 @@ def parse_json_response(raw):
             return json.loads(raw.strip())
         except Exception:
             return None
-
-
-def _default_qa(comments):
-    """Safe fallback QA result when AI response cannot be parsed."""
-    scores = {cat: {"score": mx, "feedback": "Manual review required — AI response unavailable.", "comment_refs": []}
-              for cat, mx in CAT_MAX.items()}
-    return {
-        "scores":                scores,
-        "total":                 sum(CAT_MAX.values()),
-        "overall_feedback":      f"AI feedback unavailable. {len(comments)} editor comment(s) found; deductions applied automatically.",
-        "key_strengths":         [],
-        "areas_for_improvement": [c["text"][:80] for c in comments[:5]],
-        "suggestions":           [],
-    }
 
 
 # ── File parsers ───────────────────────────────────────────────────────────
@@ -406,8 +389,11 @@ def parse_file(f):
     else:                        return extract_txt(raw)
 
 
-# ── Scoring ────────────────────────────────────────────────────────────────
+# ── Deterministic scoring ──────────────────────────────────────────────────
+# ALL numbers that affect the final score are computed here — no AI involved.
+
 def classify_comment(text):
+    """Keyword-based classification — always returns the same result for the same text."""
     low = text.lower()
     for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's",
                "the source","in the source","copied","from google","from maps","url goes","link goes",
@@ -422,21 +408,79 @@ def classify_comment(text):
         if kw in low: return "Grammar / rephrasing", 1.0
     return "Grammar / rephrasing", 1.0
 
-def apply_deductions(base_score, comments, plag_pct, ai_pct):
-    classified = []; comment_deduction = 0.0
+
+def plag_heuristic(text, links):
+    """
+    Deterministic plagiarism score based on BROCHURE_PHRASES keyword hits.
+    Returns (percentage, flagged_snippets).
+    Same file always → same score.
+    """
+    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
+    text_lower      = text.lower()
+    hits            = sum(1 for p in BROCHURE_PHRASES if p in text_lower)
+    total           = len(BROCHURE_PHRASES)
+    base            = int((math.sqrt(hits) / math.sqrt(max(total, 1))) * 60)
+    source_bonus    = min(len(flagged_sources) * 4, 15)
+    pct             = min(base + source_bonus, 100)
+
+    # Collect the actual snippets for display
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    flagged, seen = [], set()
+    for sent in sentences:
+        stripped = sent.strip()
+        if len(stripped) < 35 or stripped in seen: continue
+        for phrase in BROCHURE_PHRASES:
+            if phrase in stripped.lower():
+                seen.add(stripped); flagged.append(stripped[:280]); break
+
+    return pct, flagged_sources, flagged[:8]
+
+
+def ai_heuristic(text):
+    """
+    Deterministic AI-content score based on AI_PHRASES keyword hits.
+    Same file always → same score.
+    """
+    hits     = sum(1 for p in AI_PHRASES if p in text.lower())
+    pct      = min(hits * 5, 60)
+    snippets = []
+    for sent in re.split(r'(?<=[.!?])\s+', text):
+        if len(sent.strip()) < 35: continue
+        if any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])
+        if len(snippets) >= 5: break
+    return pct, snippets
+
+
+def apply_deductions(comments, plag_pct, ai_pct):
+    """
+    Final score = 100 − comment_deductions − plag_deduction − ai_deduction.
+    100% deterministic — no AI involved.
+    """
+    classified        = []
+    comment_deduction = 0.0
     for c in comments:
         ctype, pts = classify_comment(c["text"])
         classified.append({"author": c["author"], "text": c["text"], "type": ctype, "deduction": pts})
         comment_deduction += pts
-    plag_brackets = int(plag_pct // 20); plag_deduction = plag_brackets * 5
-    ai_brackets   = int(ai_pct   // 20); ai_deduction   = ai_brackets * 5
+
+    plag_brackets  = int(plag_pct // 20); plag_deduction = plag_brackets * 5
+    ai_brackets    = int(ai_pct   // 20); ai_deduction   = ai_brackets   * 5
     final = max(0, round(100 - comment_deduction - plag_deduction - ai_deduction, 1))
+
     return final, {
-        "base_score": 100, "comment_count": len(comments),
-        "comment_deduction": round(comment_deduction, 1), "classified": classified,
-        "plag_pct": plag_pct, "plag_brackets": plag_brackets, "plag_deduction": plag_deduction,
-        "ai_pct": ai_pct, "ai_brackets": ai_brackets, "ai_deduction": ai_deduction, "final_score": final,
+        "base_score":        100,
+        "comment_count":     len(comments),
+        "comment_deduction": round(comment_deduction, 1),
+        "classified":        classified,
+        "plag_pct":          plag_pct,
+        "plag_brackets":     plag_brackets,
+        "plag_deduction":    plag_deduction,
+        "ai_pct":            ai_pct,
+        "ai_brackets":       ai_brackets,
+        "ai_deduction":      ai_deduction,
+        "final_score":       final,
     }
+
 
 def get_recommendation(score):
     return "approve" if score >= 80 else "reject" if score < 60 else "revise"
@@ -447,8 +491,13 @@ def get_grade(score):
     return GRADE_MAP[-1][1]
 
 
-# ── QA ─────────────────────────────────────────────────────────────────────
-def run_qa(title, content, writer, ctype, lang, platform, headings, links, comments):
+# ── AI — feedback text only (does not affect score) ────────────────────────
+def run_qa_feedback(title, content, writer, ctype, lang, platform, headings, links, comments):
+    """
+    Calls Groq only to get human-readable feedback text and suggestions.
+    The returned 'scores' are OVERRIDDEN by the deterministic scoring below —
+    they are displayed per-category but do not change the final number.
+    """
     if not comments:
         scores = {cat: {"score": mx, "feedback": "No editor comments. Full marks awarded.", "comment_refs": []}
                   for cat, mx in CAT_MAX.items()}
@@ -456,9 +505,7 @@ def run_qa(title, content, writer, ctype, lang, platform, headings, links, comme
                 "overall_feedback": "No editor comments found. All categories awarded full marks.",
                 "key_strengths": [], "areas_for_improvement": [], "suggestions": []}
 
-    h_txt = "\n".join(f"  [{h['level']}] {h['text']}" for h in headings) or "  None"
     c_txt = "\n".join(f"  Comment {i+1} [{c['author']}]: {c['text']}" for i, c in enumerate(comments))
-
     prompt = f"""You are a content QA evaluator for {platform} ({lang}).
 Article: "{title}" by {writer} ({ctype})
 
@@ -468,37 +515,33 @@ Editor comments:
 Article excerpt:
 {content[:2000]}
 
-Return ONLY a raw JSON object — no markdown fences, no explanation, nothing else.
+Return ONLY a raw JSON object — no markdown, no explanation.
 
 {{
   "scores": {{
-    "Content Quality":    {{"score": <0-25>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}},
-    "SEO & Structure":    {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}},
-    "Language & Grammar": {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}},
-    "Brand Voice":        {{"score": <0-15>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}},
-    "Readability & Flow": {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}},
-    "Originality":        {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<comment numbers>]}}
+    "Content Quality":    {{"score": <0-25>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "SEO & Structure":    {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Language & Grammar": {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Brand Voice":        {{"score": <0-15>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Readability & Flow": {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Originality":        {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<nums>]}}
   }},
-  "total": <integer, sum of all scores>,
-  "overall_feedback": "<2-3 sentences summarising the issues>",
+  "total": <sum>,
+  "overall_feedback": "<2-3 sentence summary>",
   "key_strengths": ["<strength>"],
   "areas_for_improvement": ["<area>"],
   "suggestions": [
-    {{"number": 1, "action": "<specific fix>", "category": "<category name>"}},
-    {{"number": 2, "action": "<specific fix>", "category": "<category name>"}}
+    {{"number": 1, "action": "<fix>", "category": "<category>"}},
+    {{"number": 2, "action": "<fix>", "category": "<category>"}}
   ]
 }}
 
-Rules:
-- Score based ONLY on the editor comments listed above
-- Categories not mentioned in any comment keep their maximum score
-- Every comment must appear in at least one category"""
+Rules: Score based ONLY on the editor comments. Categories not mentioned keep their maximum score."""
 
     try:
         raw    = call_ai(prompt)
         result = parse_json_response(raw)
         if result and "scores" in result:
-            # Fill any missing categories with max score
             for cat, mx in CAT_MAX.items():
                 if cat not in result["scores"]:
                     result["scores"][cat] = {"score": mx, "feedback": "No issues flagged.", "comment_refs": []}
@@ -506,61 +549,36 @@ Rules:
     except Exception:
         pass
 
-    # Fallback — score deductions still apply via classify_comment
-    return _default_qa(comments)
+    # Fallback: full marks with a note
+    scores = {cat: {"score": mx, "feedback": "Manual review required — AI unavailable.", "comment_refs": []}
+              for cat, mx in CAT_MAX.items()}
+    return {"scores": scores, "total": sum(CAT_MAX.values()),
+            "overall_feedback": f"AI feedback unavailable. {len(comments)} editor comment(s) found; deductions applied automatically.",
+            "key_strengths": [], "areas_for_improvement": [c["text"][:80] for c in comments[:3]], "suggestions": []}
 
 
-# ── Plagiarism ─────────────────────────────────────────────────────────────
-def check_plagiarism(text, links):
-    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
-    prompt = f"""Identify sentences copied from UAE real estate developer brochures or websites.
-Return ONLY raw JSON — no markdown, no extra text:
-{{"plagiarism_percentage": <0-100>, "flagged_sentences": ["<sentence>"], "assessment": "<1 sentence>"}}
-Flag only clear brochure marketing language. Max 10 flagged sentences.
+def get_plag_flagged_sentences(text):
+    """
+    Ask Groq for which specific sentences look copied (display only).
+    Result is never used for scoring.
+    """
+    prompt = f"""Identify sentences copied from UAE real estate developer brochures.
+Return ONLY raw JSON: {{"flagged_sentences": ["<sentence>"]}}
+Flag only clear brochure language. Max 10 sentences.
 Article:
 {text[:4000]}"""
     try:
         raw    = call_ai(prompt)
         result = parse_json_response(raw)
         if result:
-            pct = min(int(result.get("plagiarism_percentage", 0)), 100)
-            return {"percentage": pct, "flagged_sources": flagged_sources,
-                    "flagged_sentences": result.get("flagged_sentences", [])[:15],
-                    "source": "Groq", "assessment": result.get("assessment", ""),
-                    "status": "danger" if pct > 20 else "warn" if pct > 10 else "safe"}
+            return result.get("flagged_sentences", [])[:10]
     except Exception:
         pass
-    # Heuristic fallback
-    text_lower = text.lower()
-    hits = sum(1 for p in BROCHURE_PHRASES if p in text_lower)
-    pct  = min(int((math.sqrt(hits) / math.sqrt(max(len(BROCHURE_PHRASES), 1))) * 60) +
-               min(len(flagged_sources) * 4, 15), 100)
-    return {"percentage": pct, "flagged_sources": flagged_sources, "flagged_sentences": [],
-            "source": "heuristic", "status": "danger" if pct > 20 else "warn" if pct > 10 else "safe"}
-
-def get_plag_snippets(text, links, plag_result=None):
-    if plag_result and plag_result.get("flagged_sentences"):
-        return plag_result.get("flagged_sources", []), plag_result.get("flagged_sentences", [])
-    flagged_sources = [l for l in links if any(d in l for d in KNOWN_DOMAINS)]
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    flagged, seen = [], set()
-    for sent in sentences:
-        stripped = sent.strip()
-        if len(stripped) < 35 or stripped in seen: continue
-        for phrase in BROCHURE_PHRASES:
-            if phrase in stripped.lower():
-                seen.add(stripped); flagged.append(stripped[:280]); break
-    return flagged_sources, flagged[:8]
-
-def highlight_plag(s):
-    for phrase in BROCHURE_PHRASES:
-        s = re.compile(re.escape(phrase), re.IGNORECASE).sub(
-            lambda m: f'<mark style="background:#fecaca;border-radius:3px;padding:0 2px;font-weight:500;color:#7f1d1d">{m.group(0)}</mark>', s)
-    return s
+    return []
 
 
-# ── AI detection ───────────────────────────────────────────────────────────
-def check_ai(text):
+def get_ai_flagged_sentences(text):
+    """Ask GPTZero for AI sentences (display only). Falls back to heuristic list."""
     api_key = st.secrets.get("GPTZERO_API_KEY", "")
     if api_key and len(text.strip()) > 50:
         try:
@@ -572,25 +590,25 @@ def check_ai(text):
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             doc      = data.get("documents", [{}])[0]
-            ai_pct   = int(round(doc.get("completely_generated_prob", 0) * 100))
             sents    = doc.get("sentences", [])
-            ai_sents = [s.get("sentence", "") for s in sents
-                        if s.get("generated_prob", 0) > 0.5 and len(s.get("sentence", "")) > 30][:5]
-            return {"ai_pct": ai_pct, "human_pct": 100 - ai_pct,
-                    "status": "danger" if ai_pct > 20 else "warn" if ai_pct > 10 else "safe",
-                    "source": "GPTZero", "ai_sentences": ai_sents}
+            return [s.get("sentence", "") for s in sents
+                    if s.get("generated_prob", 0) > 0.5 and len(s.get("sentence", "")) > 30][:5]
         except Exception:
             pass
-    hits     = sum(1 for p in AI_PHRASES if p in text.lower())
-    pct      = min(hits * 5, 60)
+    # Heuristic fallback
     snippets = []
     for sent in re.split(r'(?<=[.!?])\s+', text):
         if len(sent.strip()) < 35: continue
         if any(p in sent.lower() for p in AI_PHRASES): snippets.append(sent.strip()[:200])
         if len(snippets) >= 5: break
-    return {"ai_pct": pct, "human_pct": 100 - pct,
-            "status": "danger" if pct > 20 else "warn" if pct > 10 else "safe",
-            "source": "heuristic", "ai_sentences": snippets}
+    return snippets
+
+
+def highlight_plag(s):
+    for phrase in BROCHURE_PHRASES:
+        s = re.compile(re.escape(phrase), re.IGNORECASE).sub(
+            lambda m: f'<mark style="background:#fecaca;border-radius:3px;padding:0 2px;font-weight:500;color:#7f1d1d">{m.group(0)}</mark>', s)
+    return s
 
 def highlight_ai(s):
     for phrase in AI_PHRASES:
@@ -706,22 +724,45 @@ def page_submit():
             if not parsed["comments"]: st.caption("None")
 
     prog = st.progress(0, text="Starting…")
-    prog.progress(15, text="Running AI evaluation…")
-    qa = run_qa(title, parsed["text"], writer, ctype, lang, platform,
-                parsed["headings"], parsed["links"], parsed["comments"])
 
-    prog.progress(50, text="Checking plagiarism…")
-    plag = check_plagiarism(parsed["text"], parsed["links"])
-    plag_sources, plag_snippets = get_plag_snippets(parsed["text"], parsed["links"], plag)
+    # ── Step 1: deterministic scoring (no AI, always same result) ──────────
+    prog.progress(10, text="Calculating score…")
+    plag_pct, plag_sources, plag_snippets_heuristic = plag_heuristic(parsed["text"], parsed["links"])
+    ai_pct_score, _                                 = ai_heuristic(parsed["text"])
+    final_score, deductions                         = apply_deductions(parsed["comments"], plag_pct, ai_pct_score)
+    recommendation                                  = get_recommendation(final_score)
 
-    prog.progress(72, text="Checking AI content…")
-    ai = check_ai(parsed["text"])
+    # ── Step 2: AI feedback (text only, does not change score) ─────────────
+    prog.progress(30, text="Getting AI feedback…")
+    qa = run_qa_feedback(title, parsed["text"], writer, ctype, lang, platform,
+                         parsed["headings"], parsed["links"], parsed["comments"])
 
-    prog.progress(95, text="Calculating final score…")
-    final_score, deductions = apply_deductions(
-        qa.get("total", 0), parsed["comments"], plag["percentage"], ai["ai_pct"])
-    recommendation = get_recommendation(final_score)
+    prog.progress(60, text="Finding flagged sentences…")
+    plag_snippets_ai = get_plag_flagged_sentences(parsed["text"])
+    # Use AI sentences if available, otherwise heuristic
+    plag_snippets    = plag_snippets_ai if plag_snippets_ai else plag_snippets_heuristic
+
+    prog.progress(80, text="Checking AI content…")
+    ai_flagged_sents = get_ai_flagged_sentences(parsed["text"])
+    _, ai_heuristic_snippets = ai_heuristic(parsed["text"])
+
     prog.progress(100, text="Done."); prog.empty()
+
+    # Build the plagiarism and AI display dicts
+    plag_display = {
+        "percentage":        plag_pct,
+        "flagged_sources":   plag_sources,
+        "flagged_sentences": plag_snippets,
+        "source":            "heuristic",
+        "status":            "danger" if plag_pct > 20 else "warn" if plag_pct > 10 else "safe",
+    }
+    ai_display = {
+        "ai_pct":       ai_pct_score,
+        "human_pct":    100 - ai_pct_score,
+        "source":       "heuristic",
+        "ai_sentences": ai_flagged_sents or ai_heuristic_snippets,
+        "status":       "danger" if ai_pct_score > 20 else "warn" if ai_pct_score > 10 else "safe",
+    }
 
     sub = {
         "date":            datetime.now().strftime("%d %b %Y %H:%M"),
@@ -736,14 +777,14 @@ def page_submit():
         "links":           parsed["links"],
         "comments":        parsed["comments"],
         "qa":              qa,
-        "plagiarism":      plag,
+        "plagiarism":      plag_display,
         "plag_snippets":   plag_snippets,
         "plag_sources":    plag_sources,
-        "ai_detection":    ai,
+        "ai_detection":    ai_display,
         "deductions":      deductions,
         "qa_score":        final_score,
-        "plagiarism_pct":  plag["percentage"],
-        "ai_pct":          ai["ai_pct"],
+        "plagiarism_pct":  plag_pct,
+        "ai_pct":          ai_pct_score,
         "recommendation":  recommendation,
         "editor_decision": "",
         "editor_notes":    "",
@@ -814,7 +855,7 @@ def render_report(sub):
             for src in plag_sources[:3]: snip_html += f'<div class="issue-snippet"><strong style="color:#92400e">Source:</strong> {src}</div>'
             for s in plag_snippets[:6]: snip_html += f'<div class="issue-snippet">{highlight_plag(s)}</div>'
             snip_html += '</div>'
-        st.markdown(f'<div class="detect-card"><div class="detect-title">Plagiarism check <span style="font-size:10px;color:#888"> via {plag.get("source","heuristic")}</span></div><div class="detect-bar"><div class="detect-bar-f" style="width:{min(pp,100)}%;background:{col}"></div></div>{thresh}<div class="detect-note">{"Rewrite flagged sections." if over else "Within acceptable range."}</div>{snip_html}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="detect-card"><div class="detect-title">Plagiarism check <span style="font-size:10px;color:#888"> via heuristic</span></div><div class="detect-bar"><div class="detect-bar-f" style="width:{min(pp,100)}%;background:{col}"></div></div>{thresh}<div class="detect-note">{"Rewrite flagged sections." if over else "Within acceptable range."}</div>{snip_html}</div>', unsafe_allow_html=True)
     with pc2:
         ap      = ai["ai_pct"]; ai_over = ap > 20; a_col = "#dc2626" if ai_over else "#059669"
         a_thresh = (f'<span class="detect-thresh" style="background:#fee2e2;color:#991b1b">{ap}% — over 20% — 5 pts deducted</span>'
@@ -824,7 +865,7 @@ def render_report(sub):
             ai_snip = '<div class="issue-block"><div class="issue-block-title">Flagged sentences</div>'
             for s in ai["ai_sentences"][:5]: ai_snip += f'<div class="issue-snippet">{highlight_ai(s)}</div>'
             ai_snip += '</div>'
-        st.markdown(f'<div class="detect-card"><div class="detect-title">AI detection <span style="font-size:10px;color:#888"> via {ai.get("source","heuristic")}</span></div><div class="detect-bar"><div class="detect-bar-f" style="width:{min(ap,100)}%;background:{a_col}"></div></div>{a_thresh}<div class="detect-note">{"High AI content." if ai_over else "Appears mostly human-written."}</div><div class="detect-split"><div class="detect-seg"><div class="detect-seg-n" style="color:#059669">{ai["human_pct"]}%</div><div class="detect-seg-l">Human</div></div><div class="detect-seg"><div class="detect-seg-n" style="color:{a_col}">{ap}%</div><div class="detect-seg-l">AI likely</div></div></div>{ai_snip}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="detect-card"><div class="detect-title">AI detection <span style="font-size:10px;color:#888"> via heuristic</span></div><div class="detect-bar"><div class="detect-bar-f" style="width:{min(ap,100)}%;background:{a_col}"></div></div>{a_thresh}<div class="detect-note">{"High AI content." if ai_over else "Appears mostly human-written."}</div><div class="detect-split"><div class="detect-seg"><div class="detect-seg-n" style="color:#059669">{ai["human_pct"]}%</div><div class="detect-seg-l">Human</div></div><div class="detect-seg"><div class="detect-seg-n" style="color:{a_col}">{ap}%</div><div class="detect-seg-l">AI likely</div></div></div>{ai_snip}</div>', unsafe_allow_html=True)
 
     st.divider()
     st.markdown("#### Category scores")
@@ -913,8 +954,8 @@ def page_dashboard():
 
     st.markdown(f'<div class="dash-stats-row"><div class="dash-stat blue"><div class="dash-stat-num">{total}</div><div class="dash-stat-lbl">Total</div></div><div class="dash-stat green"><div class="dash-stat-num">{approved}</div><div class="dash-stat-lbl">Approved</div></div><div class="dash-stat amber"><div class="dash-stat-num">{revision}</div><div class="dash-stat-lbl">Revision</div></div><div class="dash-stat red"><div class="dash-stat-num">{rejected}</div><div class="dash-stat-lbl">Rejected</div></div><div class="dash-stat"><div class="dash-stat-num">{pending}</div><div class="dash-stat-lbl">Pending</div></div><div class="dash-stat blue"><div class="dash-stat-num">{avg_score}</div><div class="dash-stat-lbl">Avg score</div></div></div>', unsafe_allow_html=True)
 
-    all_writers = sorted(set(s["writer"]              for s in all_subs if s.get("writer")))
-    all_editors = sorted(set(s.get("editor_name","")  for s in all_subs if s.get("editor_name")))
+    all_writers = sorted(set(s["writer"]             for s in all_subs if s.get("writer")))
+    all_editors = sorted(set(s.get("editor_name","") for s in all_subs if s.get("editor_name")))
     fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
     wf = fc1.selectbox("Writer",             ["All"] + all_writers,   key="dash_writer")
     pf = fc2.selectbox("Platform",           ["All"] + PLATFORMS,     key="dash_platform")
@@ -940,8 +981,8 @@ def page_dashboard():
         score     = sub.get("qa_score", 0); dec = sub.get("editor_decision") or "Pending"
         ded       = sub.get("deductions", {})
         cmt_count = ded.get("comment_count", 0); cmt_ded = ded.get("comment_deduction", 0)
-        plag_ded  = ded.get("plag_deduction", 0); ai_ded = ded.get("ai_deduction", 0)
-        plag_pct  = sub.get("plagiarism_pct", 0); ai_pct = sub.get("ai_pct", 0)
+        plag_ded  = ded.get("plag_deduction", 0); ai_ded  = ded.get("ai_deduction", 0)
+        plag_pct  = sub.get("plagiarism_pct", 0); ai_pct  = sub.get("ai_pct", 0)
         overall_fb = sub.get("qa", {}).get("overall_feedback", "")
 
         parts = []
