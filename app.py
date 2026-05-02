@@ -6,6 +6,8 @@ import urllib.request
 from datetime import datetime
 from io import BytesIO
 import difflib
+import html
+from urllib.parse import urlparse
 
 try:
     from groq import Groq
@@ -56,15 +58,26 @@ GRADE_MAP = [
     (0,  "F — Reject"),
 ]
 
-# Weighted comment types
+# Weighted issue types used for comments and silent edits.
+# Silent edits are intentionally more detailed than comments so the system can
+# separate harmless wording cleanup from factual corrections and source fixes.
 COMMENT_WEIGHTS = {
-    "factual":     {"label": "Factual error",       "deduction": 2.0,  "color": "#fee2e2", "tc": "#991b1b"},
-    "missing":     {"label": "Missing critical info","deduction": 2.0,  "color": "#fef3c7", "tc": "#92400e"},
-    "structural":  {"label": "Structural rewrite",  "deduction": 1.5,  "color": "#fde8d8", "tc": "#9a3412"},
-    "brand_voice": {"label": "Brand voice / tone",  "deduction": 1.5,  "color": "#ede9fe", "tc": "#5b21b6"},
-    "grammar":     {"label": "Grammar / phrasing",  "deduction": 1.0,  "color": "#f0f4ff", "tc": "#2D4A8A"},
+    "factual":            {"label": "Factual correction",        "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
+    "wrong_info_removed": {"label": "Wrong info removed",        "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
+    "source_alignment":   {"label": "Source alignment",          "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
+    "contradiction_fixed": {"label": "Contradiction fixed",      "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
+    "missing":            {"label": "Missing critical info",     "deduction": 2.0, "color": "#fef3c7", "tc": "#92400e"},
+    "missing_info_added": {"label": "Missing info added",        "deduction": 1.5, "color": "#fef3c7", "tc": "#92400e"},
+    "structural":         {"label": "Structural rewrite",        "deduction": 1.5, "color": "#fde8d8", "tc": "#9a3412"},
+    "brand_voice":        {"label": "Brand voice / tone",        "deduction": 1.2, "color": "#ede9fe", "tc": "#5b21b6"},
+    "arabic_language":    {"label": "Arabic language correction", "deduction": 0.8, "color": "#e0f2fe", "tc": "#075985"},
+    "grammar":            {"label": "Grammar / phrasing",        "deduction": 0.7, "color": "#f0f4ff", "tc": "#2D4A8A"},
+    "rephrase":           {"label": "Rephrase only",             "deduction": 0.5, "color": "#f1f5f9", "tc": "#475569"},
+    "formatting":         {"label": "Formatting / punctuation",  "deduction": 0.2, "color": "#f8fafc", "tc": "#64748b"},
 }
 
+LOW_IMPACT_EDIT_TYPES = {"formatting", "rephrase", "grammar", "arabic_language"}
+HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
 REVISION_ROUND_PENALTY = 1.0  # per extra round
 
 # Known sources always checked for plagiarism
@@ -348,120 +361,246 @@ def export_revision_text(drive_svc, creds, doc_id, revision_id):
     except Exception as e:
         return None
 
+def _safe_html(value):
+    return html.escape(str(value or ""))
+
+def normalize_for_compare(text):
+    """Normalize English/Arabic text for fair diff comparison."""
+    text = str(text or "")
+    arabic_diacritics = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
+    text = arabic_diacritics.sub("", text)
+    text = re.sub(r"[\u0640]", "", text)  # tatweel
+    text = re.sub(r"[إأآا]", "ا", text)
+    text = re.sub(r"ى", "ي", text)
+    text = re.sub(r"ة", "ه", text)
+    text = re.sub(r"[\s\u00A0]+", " ", text)
+    text = re.sub(r"[.,;:!?؟،؛\"'“”‘’()\[\]{}<>]+", "", text)
+    return text.strip().lower()
+
+def split_sentences_smart(text):
+    """Sentence splitter that works for English and Arabic punctuation."""
+    chunks = []
+    for para in str(text or "").split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        # Handles English punctuation and Arabic full stop/question/comma-like boundaries.
+        parts = re.split(r'(?<=[.!?؟。؛])\s+|(?<=،)\s+(?=[\u0600-\u06FFA-Z0-9])', para)
+        for part in parts:
+            part = part.strip()
+            if part:
+                chunks.append(part)
+    return chunks
+
+def token_similarity(a, b):
+    a_norm = normalize_for_compare(a)
+    b_norm = normalize_for_compare(b)
+    if not a_norm and not b_norm:
+        return 1.0
+    if not a_norm or not b_norm:
+        return 0.0
+    a_tokens = set(a_norm.split())
+    b_tokens = set(b_norm.split())
+    if not a_tokens or not b_tokens:
+        return difflib.SequenceMatcher(None, a_norm, b_norm).ratio()
+    overlap = len(a_tokens & b_tokens) / max(len(a_tokens), len(b_tokens))
+    seq_ratio = difflib.SequenceMatcher(None, a_norm, b_norm).ratio()
+    return max(overlap, seq_ratio)
+
+def looks_like_formatting_only(original, revised):
+    return normalize_for_compare(original) == normalize_for_compare(revised)
+
 def compute_diff(writer_text, editor_text):
     """
-    Diff two versions of the doc at sentence level.
-    Returns list of {original, revised, type} dicts.
+    Diff two versions of the doc at sentence/paragraph level.
+    Returns list of {tag, original, revised, similarity} dicts.
+    Arabic-aware: ignores tashkeel, tatweel and punctuation-only changes.
     """
-    # Split into sentences for meaningful diffs
-    def split_sentences(text):
-        lines = []
-        for para in text.split("\n"):
-            para = para.strip()
-            if not para:
-                continue
-            # Split on sentence boundaries
-            sents = re.split(r'(?<=[.!?])\s+', para)
-            lines.extend([s.strip() for s in sents if s.strip()])
-        return lines
+    w_sents = split_sentences_smart(writer_text)
+    e_sents = split_sentences_smart(editor_text)
 
-    w_sents = split_sentences(writer_text)
-    e_sents = split_sentences(editor_text)
+    w_keys = [normalize_for_compare(x) for x in w_sents]
+    e_keys = [normalize_for_compare(x) for x in e_sents]
 
-    sm      = difflib.SequenceMatcher(None, w_sents, e_sents, autojunk=False)
+    sm = difflib.SequenceMatcher(None, w_keys, e_keys, autojunk=False)
     changes = []
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             continue
         original = " ".join(w_sents[i1:i2]).strip()
-        revised  = " ".join(e_sents[j1:j2]).strip()
-        # Skip trivial whitespace-only diffs
-        if original.lower().strip() == revised.lower().strip():
-            continue
+        revised = " ".join(e_sents[j1:j2]).strip()
         if not original and not revised:
             continue
+        if looks_like_formatting_only(original, revised):
+            # Formatting-only/tashkeel-only changes are kept only if meaningful enough.
+            continue
+        sim = round(token_similarity(original, revised), 3)
         changes.append({
-            "tag":      tag,           # replace / delete / insert
-            "original": original[:400],
-            "revised":  revised[:400],
+            "tag": tag,  # replace / delete / insert
+            "original": original[:700],
+            "revised": revised[:700],
+            "similarity": sim,
+            "word_delta": len(revised.split()) - len(original.split()),
         })
 
     return changes
 
 def classify_diff_changes(changes, platform, lang):
     """
-    Ask AI to classify each editor diff change by severity.
-    Returns list with type and deduction added.
+    Classify silent edits by editorial reason, not just by size.
+    Returns each change with label, deduction, severity and explanation.
     """
     if not changes:
         return []
 
+    allowed = list(COMMENT_WEIGHTS.keys())
     items = "\n".join(
-        f"[{i+1}] ORIGINAL: {c['original'][:200]}\n    REVISED:  {c['revised'][:200]}"
-        for i, c in enumerate(changes)
+        f"[{i+1}] TAG: {c.get('tag','')} | SIMILARITY: {c.get('similarity','')} | WORD_DELTA: {c.get('word_delta','')}\n"
+        f"ORIGINAL: {c.get('original','')[:500]}\nREVISED: {c.get('revised','')[:500]}"
+        for i, c in enumerate(changes[:80])
     )
 
-    prompt = f"""You are a content QA analyst for {platform} ({lang}).
+    arabic_rules = """
+Arabic-specific rules:
+- Treat tashkeel, hamza style, punctuation, spacing, and light صياغة changes as grammar/arabic_language/formatting unless the meaning changed.
+- If Arabic wording changes a real entity, location, developer, unit type, price, area, number, handover date, amenity, payment plan, road name, or source-backed detail, classify it as factual/source_alignment.
+- If the editor deletes unsupported Arabic information, classify it as wrong_info_removed.
+- If the editor adds a required source-backed detail, classify it as missing_info_added.
+""" if lang == "Arabic" else ""
 
-An editor made the following changes to a writer's article.
-Classify each change by the REASON the editor had to make it:
+    prompt = f"""You are a senior editorial QA analyst for {platform}. Content language: {lang}.
 
-- "factual"    → Editor corrected wrong data, wrong names, wrong facts, wrong numbers
-- "missing"    → Editor added information the writer should have included
-- "structural" → Editor rewrote/reorganized whole sections
-- "brand_voice"→ Editor fixed tone, style, or platform voice issues
-- "grammar"    → Editor fixed grammar, phrasing, or minor wording
+An editor silently changed a writer's article without comments. Classify each change by WHY the editor likely made it.
+
+Use ONLY these type values:
+- "formatting" → punctuation, spacing, capitalization, tashkeel-only, no meaning change
+- "grammar" → grammar/spelling/minor phrasing, no factual meaning change
+- "arabic_language" → Arabic grammar, إملاء, صياغة, علامات ترقيم, no factual meaning change
+- "rephrase" → same facts, same meaning, smoother sentence
+- "brand_voice" → tone/platform voice improved, less generic, better marketing wording
+- "structural" → section moved, heading fixed, paragraph reorganized, large rewrite without clear fact correction
+- "missing_info_added" → editor added important/source-based info writer missed
+- "missing" → same as missing_info_added when the edit clearly adds required info
+- "factual" → wrong fact corrected: number, project name, developer, price, date, location, unit type, amenity, URL, legal/source info
+- "wrong_info_removed" → unsupported/wrong information deleted
+- "source_alignment" → wording changed to match brochure/developer/source exactly in facts
+- "contradiction_fixed" → edit fixed conflict between two parts
+
+{arabic_rules}
+
+Important:
+- Do NOT over-penalize simple rewriting.
+- If old and new facts are the same, use grammar/rephrase/arabic_language.
+- If the fact changed or wrong info was removed, use factual/wrong_info_removed/source_alignment.
+- For delete-only changes, decide whether it is wrong_info_removed, structural, or rephrase cleanup.
+- For insert-only changes, decide whether it is missing_info_added, brand_voice, or grammar.
 
 Changes:
 {items}
 
-Return ONLY raw JSON, no markdown:
-{{"changes": [{{"index": 1, "type": "factual", "reason": "brief explanation"}}, ...]}}
+Return ONLY raw JSON:
+{{"changes": [
+  {{"index": 1, "type": "factual", "severity": "high", "meaning_changed": true, "reason": "brief reason", "old_fact": "", "new_fact": ""}}
+]}}
 
-Classify every change. If the change is minor formatting or punctuation only, use "grammar"."""
+Every change must be classified. Use one of: {allowed}.
+"""
 
     try:
-        raw    = call_ai(prompt)
+        raw = call_ai(prompt)
         result = parse_json_response(raw)
         if result and "changes" in result:
-            cls_map = {c["index"]: c for c in result["changes"]}
+            cls_map = {}
+            for c in result.get("changes", []):
+                try:
+                    cls_map[int(c.get("index"))] = c
+                except Exception:
+                    continue
             classified = []
             for i, ch in enumerate(changes, 1):
-                info  = cls_map.get(i, {})
-                ctype = info.get("type", "grammar")
+                info = cls_map.get(i, {})
+                ctype = str(info.get("type", "grammar")).strip()
                 if ctype not in COMMENT_WEIGHTS:
-                    ctype = "grammar"
+                    ctype = fallback_diff_type(ch, lang)
                 w = COMMENT_WEIGHTS[ctype]
+                severity = info.get("severity") or ("high" if ctype in HIGH_IMPACT_EDIT_TYPES else "low" if ctype in LOW_IMPACT_EDIT_TYPES else "medium")
                 classified.append({
                     **ch,
-                    "type":      ctype,
-                    "label":     w["label"],
+                    "type": ctype,
+                    "label": w["label"],
                     "deduction": w["deduction"],
-                    "color":     w["color"],
-                    "tc":        w["tc"],
-                    "reason":    info.get("reason", ""),
+                    "color": w["color"],
+                    "tc": w["tc"],
+                    "severity": severity,
+                    "meaning_changed": bool(info.get("meaning_changed", ctype in HIGH_IMPACT_EDIT_TYPES)),
+                    "reason": info.get("reason", ""),
+                    "old_fact": info.get("old_fact", ""),
+                    "new_fact": info.get("new_fact", ""),
                 })
             return classified
     except Exception:
         pass
 
-    # Fallback: classify by size of change
     classified = []
     for ch in changes:
-        orig_len = len(ch["original"].split())
-        rev_len  = len(ch["revised"].split())
-        if ch["tag"] == "replace" and abs(orig_len - rev_len) > 10:
-            ctype = "structural"
-        elif ch["tag"] == "insert" and rev_len > 5:
-            ctype = "missing"
-        else:
-            ctype = "grammar"
+        ctype = fallback_diff_type(ch, lang)
         w = COMMENT_WEIGHTS[ctype]
-        classified.append({**ch, "type": ctype, "label": w["label"],
-                           "deduction": w["deduction"], "color": w["color"],
-                           "tc": w["tc"], "reason": ""})
+        classified.append({
+            **ch,
+            "type": ctype,
+            "label": w["label"],
+            "deduction": w["deduction"],
+            "color": w["color"],
+            "tc": w["tc"],
+            "severity": "high" if ctype in HIGH_IMPACT_EDIT_TYPES else "low" if ctype in LOW_IMPACT_EDIT_TYPES else "medium",
+            "meaning_changed": ctype in HIGH_IMPACT_EDIT_TYPES,
+            "reason": "Fallback classification based on edit pattern and keywords.",
+            "old_fact": "",
+            "new_fact": "",
+        })
     return classified
+
+def fallback_diff_type(ch, lang):
+    original = ch.get("original", "") or ""
+    revised = ch.get("revised", "") or ""
+    tag = ch.get("tag", "")
+    both = f"{original} {revised}".lower()
+    ar = re.search(r"[\u0600-\u06FF]", both) is not None
+    sim = ch.get("similarity")
+    try:
+        sim = float(sim)
+    except Exception:
+        sim = token_similarity(original, revised)
+
+    fact_keywords = [
+        "aed", "price", "handover", "developer", "location", "bedroom", "studio",
+        "sqft", "sq ft", "payment", "floor", "floors", "amenity", "amenities",
+        "dubai", "abu dhabi", "dld", "rera", "unit", "units", "villa", "apartment",
+        "درهم", "سعر", "أسعار", "المطور", "الموقع", "غرفة", "غرف", "استوديو",
+        "قدم", "مربع", "خطة", "الدفع", "طابق", "مرافق", "دبي", "أبوظبي", "وحدة", "شقة", "فيلا"
+    ]
+    source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي"]
+
+    if tag == "delete" and len(original.split()) >= 6:
+        if any(k in both for k in fact_keywords + source_keywords):
+            return "wrong_info_removed"
+        return "structural" if len(original.split()) > 25 else "rephrase"
+    if tag == "insert" and len(revised.split()) >= 6:
+        if any(k in both for k in fact_keywords + source_keywords):
+            return "missing_info_added"
+        return "brand_voice" if len(revised.split()) > 18 else "rephrase"
+    if any(k in both for k in source_keywords) and sim < 0.92:
+        return "source_alignment"
+    if any(k in both for k in fact_keywords) and sim < 0.88:
+        return "factual"
+    if ar or lang == "Arabic":
+        return "arabic_language" if sim >= 0.82 else "rephrase"
+    if sim >= 0.90:
+        return "grammar"
+    if abs(len(revised.split()) - len(original.split())) > 20:
+        return "structural"
+    return "rephrase"
 
 def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_name, revisions):
     """Diff writer vs editor version. Matches by display name, falls back to first vs last."""
@@ -778,14 +917,40 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
     """Legacy — kept for backward compat."""
     return apply_gdoc_deductions_full(classified_comments, [], editor_rounds)
 
+def capped_low_impact_deduction(items):
+    """
+    Low-impact silent edits should not destroy the score.
+    Factual/source edits are counted fully; grammar/rephrase/formatting has a soft cap.
+    """
+    high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
+    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES]
+    low = [d for d in items if d.get("type") in LOW_IMPACT_EDIT_TYPES]
+
+    high_total = sum(float(d.get("deduction", 0)) for d in high)
+    medium_total = sum(float(d.get("deduction", 0)) for d in medium)
+    raw_low_total = sum(float(d.get("deduction", 0)) for d in low)
+
+    # Low-impact edits matter, but cap them so a polished article is not punished
+    # like one with wrong facts. The first 10 count normally, then cap at 8 pts.
+    low_total = min(raw_low_total, 8.0)
+    return high_total + medium_total + low_total, {
+        "high_count": len(high),
+        "medium_count": len(medium),
+        "low_count": len(low),
+        "raw_low_deduction": round(raw_low_total, 1),
+        "low_cap_applied": raw_low_total > low_total,
+        "low_capped_deduction": round(low_total, 1),
+    }
+
 def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds, plag_result=None):
     """
-    Score = 100 − comment deductions − diff deductions − rounds penalty − plagiarism deduction.
+    Score = 100 − comment deductions − smart silent-edit deductions − rounds penalty − plagiarism deduction.
+    Silent edits use richer categories and a low-impact cap.
     """
-    comment_deduction = sum(c["deduction"] for c in classified_comments)
+    comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
 
-    # Diff deductions
-    diff_deduction = sum(d["deduction"] for d in diff_classified)
+    # Diff deductions: factual/source changes count fully; grammar/rephrase is capped.
+    diff_deduction, diff_summary = capped_low_impact_deduction(diff_classified)
 
     # Rounds penalty
     rounds_penalty = max(0, (editor_rounds - 1)) * REVISION_ROUND_PENALTY
@@ -797,14 +962,13 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
     total_deduction = comment_deduction + diff_deduction + rounds_penalty + plag_ded
     final = max(0, round(100 - total_deduction, 1))
 
-    # Group comments by type
     by_type = {}
     for c in classified_comments:
-        by_type.setdefault(c["type"], []).append(c)
+        by_type.setdefault(c.get("type", "grammar"), []).append(c)
 
     diff_by_type = {}
     for d in diff_classified:
-        diff_by_type.setdefault(d["type"], []).append(d)
+        diff_by_type.setdefault(d.get("type", "grammar"), []).append(d)
 
     return final, {
         "base_score":         100,
@@ -812,6 +976,7 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
         "comment_deduction":  round(comment_deduction, 1),
         "diff_count":         len(diff_classified),
         "diff_deduction":     round(diff_deduction, 1),
+        "diff_summary":       diff_summary,
         "by_type":            by_type,
         "diff_by_type":       diff_by_type,
         "editor_rounds":      editor_rounds,
@@ -1011,117 +1176,154 @@ def fetch_page_text(url, timeout=8):
     except Exception:
         return ""
 
+def extract_domain(url):
+    try:
+        host = urlparse(url).netloc.lower()
+        return host[4:] if host.startswith("www.") else host
+    except Exception:
+        return ""
+
+def sentence_chunks_for_plagiarism(text):
+    chunks = []
+    for s in split_sentences_smart(text):
+        words = s.split()
+        # Arabic sentences can be shorter but still meaningful.
+        if len(words) >= 9 or len(s) >= 70:
+            chunks.append(s.strip())
+    return chunks
+
+def source_similarity(sentence, source_sentence):
+    return token_similarity(sentence, source_sentence)
+
 def check_plagiarism_ai(article_text, doc_links):
     """
-    Two-stage plagiarism check:
-    1. Fetch accessible doc links (non-portal sources like developer/gov sites)
-    2. Use AI to detect brochure-copied language in the article text
-    Returns {pct, flagged, sources_checked, method}
+    Hybrid plagiarism/originality check:
+    1. Fetch accessible source links from the article.
+    2. Compare English/Arabic sentences using normalized token similarity.
+    3. Ask AI to flag copied/paraphrased brochure-style copy.
+
+    Note: Google AI Mode is not used here because it is not a plagiarism API.
+    For production-level plagiarism, connect a dedicated plagiarism API later.
     """
-    # Stage 1: try to fetch doc links (skip known blocked portals)
-    BLOCKED_DOMAINS = {"bayut.com", "propertyfinder.ae", "dubizzle.com",
-                       "google.com", "facebook.com", "instagram.com", "twitter.com"}
+    BLOCKED_DOMAINS = {
+        "bayut.com", "propertyfinder.ae", "dubizzle.com", "google.com",
+        "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com"
+    }
+
     fetched_sources = []
-    for link in doc_links[:8]:
-        if not link.startswith("http"):
+    checked_urls = []
+    for link in list(dict.fromkeys(doc_links or []))[:12]:
+        if not str(link).startswith("http"):
             continue
-        domain = re.sub(r'https?://(www\.)?', '', link).split('/')[0].lower()
-        if any(b in domain for b in BLOCKED_DOMAINS):
+        domain = extract_domain(link)
+        if not domain or any(b in domain for b in BLOCKED_DOMAINS):
             continue
+        checked_urls.append(link)
         text = fetch_page_text(link)
-        if text and len(text) > 200:
+        if text and len(text) > 250:
             fetched_sources.append({"name": domain, "url": link, "text": text})
 
-    # Stage 2: sentence matching against fetched sources
-    article_sentences = [
-        s.strip() for s in re.split(r'(?<=[.!?])\s+', article_text)
-        if len(s.strip().split()) >= 12
-    ]
+    article_sentences = sentence_chunks_for_plagiarism(article_text)
     flagged_from_sources = []
     matched_idxs = set()
 
     for src in fetched_sources:
+        src_sentences = sentence_chunks_for_plagiarism(src["text"][:60000])[:900]
+        src_norm_full = normalize_for_compare(src["text"][:60000])
         for i, sent in enumerate(article_sentences):
             if i in matched_idxs:
                 continue
-            if sent.lower()[:60] in src["text"].lower():
+            sent_norm = normalize_for_compare(sent)
+            if len(sent_norm) > 60 and sent_norm in src_norm_full:
                 matched_idxs.add(i)
                 flagged_from_sources.append({
-                    "sentence":   sent[:300],
-                    "source":     src["name"],
-                    "similarity": 95,
-                    "method":     "exact match",
+                    "sentence": sent[:350],
+                    "source": src["name"],
+                    "similarity": 98,
+                    "method": "exact normalized match",
                 })
-            else:
-                w1 = set(sent.lower().split())
-                # Check against source sentences
-                for s_sent in re.split(r'(?<=[.!?])\s+', src["text"])[:500]:
-                    w2 = set(s_sent.lower().split())
-                    if len(w1) > 5 and len(w2) > 5:
-                        overlap = len(w1 & w2) / max(len(w1), len(w2))
-                        if overlap >= 0.78:
-                            matched_idxs.add(i)
-                            flagged_from_sources.append({
-                                "sentence":   sent[:300],
-                                "source":     src["name"],
-                                "similarity": round(overlap * 100),
-                                "method":     "high similarity",
-                            })
-                            break
+                continue
+
+            best = 0.0
+            for src_sent in src_sentences:
+                sim = source_similarity(sent, src_sent)
+                if sim > best:
+                    best = sim
+                if sim >= 0.82:
+                    matched_idxs.add(i)
+                    flagged_from_sources.append({
+                        "sentence": sent[:350],
+                        "source": src["name"],
+                        "similarity": round(sim * 100),
+                        "method": "high sentence similarity",
+                    })
+                    break
 
     source_pct = round(len(matched_idxs) / max(len(article_sentences), 1) * 100, 1)
 
-    # Stage 3: AI detection for brochure/marketing language
     ai_flagged = []
     ai_pct = 0.0
     try:
-        prompt = f"""You are a plagiarism detector for UAE real estate content.
+        prompt = f"""You are an originality and plagiarism reviewer for UAE real estate content.
 
-Analyze this article and identify sentences that appear to be:
-1. Copied directly from developer brochures or marketing materials
-2. Copied from other real estate portals or listings
-3. Generic marketing copy not written originally by the author
+Analyze the article below. Detect whether sentences look copied or closely paraphrased from:
+- developer brochures
+- official project pages
+- competitor portals
+- generic AI/marketing copy copied with little editing
 
-Article (first 3000 chars):
-{article_text[:3000]}
+Important rules:
+- Do NOT punish common factual phrases like project name, location, developer, bedroom mix, prices, or payment plan by themselves.
+- Flag only full sentences/phrases that look copied, over-polished, brochure-like, or not originally written.
+- For Arabic content, check copied Arabic marketing wording as well as translated brochure wording.
+- Be conservative. Do not invent sources.
+
+Article excerpt:
+{article_text[:4500]}
 
 Return ONLY raw JSON:
 {{
-  "plagiarism_pct": <0-100 integer estimate of % copied content>,
+  "plagiarism_pct": <0-100 integer estimate>,
+  "confidence": "low|medium|high",
   "flagged_sentences": [
-    {{"sentence": "<copied sentence>", "reason": "<why it looks copied>", "likely_source": "<developer name or portal>"}}
+    {{"sentence": "<sentence>", "reason": "<why>", "likely_source": "<source type/name>"}}
   ]
 }}
-
-Be conservative — only flag sentences that are clearly not original writing. Max 8 sentences."""
-
-        raw    = call_ai(prompt)
+Max 8 flagged sentences."""
+        raw = call_ai(prompt)
         result = parse_json_response(raw)
         if result:
-            ai_pct = float(result.get("plagiarism_pct", 0))
+            ai_pct = float(result.get("plagiarism_pct", 0) or 0)
+            confidence = result.get("confidence", "medium")
+            # Keep AI-only estimates conservative when no source was fetched.
+            if not fetched_sources and confidence == "low":
+                ai_pct = min(ai_pct, 12)
             for f in result.get("flagged_sentences", [])[:8]:
-                ai_flagged.append({
-                    "sentence":   f.get("sentence", "")[:300],
-                    "source":     f.get("likely_source", "Unknown source"),
-                    "similarity": ai_pct,
-                    "method":     f.get("reason", "AI detected"),
-                })
+                sentence = f.get("sentence", "")
+                if sentence:
+                    ai_flagged.append({
+                        "sentence": sentence[:350],
+                        "source": f.get("likely_source", "AI originality analysis"),
+                        "similarity": round(ai_pct),
+                        "method": f.get("reason", "AI originality signal"),
+                    })
     except Exception:
         pass
 
-    # Combine: take max of source-match and AI estimate
+    # Source matches are stronger evidence. AI estimate helps catch paraphrasing.
     final_pct = max(source_pct, ai_pct)
     all_flagged = flagged_from_sources + ai_flagged
-
     sources_checked = [s["name"] for s in fetched_sources]
-    if ai_pct > 0:
-        sources_checked.append("AI content analysis")
+    if checked_urls and not sources_checked:
+        sources_checked.append("Source URLs were checked but not readable")
+    sources_checked.append("AI originality analysis")
 
     return {
-        "pct":             round(final_pct, 1),
-        "flagged":         all_flagged[:10],
-        "sources_checked": sources_checked if sources_checked else ["AI content analysis"],
-        "method":          "hybrid",
+        "pct": round(min(final_pct, 100), 1),
+        "flagged": all_flagged[:12],
+        "sources_checked": list(dict.fromkeys(sources_checked)),
+        "method": "hybrid_source_similarity_ai",
+        "note": "Google AI Mode is not used as an automated plagiarism API; this system uses source similarity plus AI originality analysis.",
     }
 
 def plag_deduction(pct):
@@ -1142,12 +1344,15 @@ def sidebar():
         st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
         st.markdown("""
 | Rule | Pts |
-|---|---|
-| Factual error | −2 |
-| Missing critical info | −2 |
+|---|---:|
+| Factual/source correction | −2 |
+| Wrong info removed | −2 |
+| Missing info added | −1.5 to −2 |
 | Structural rewrite | −1.5 |
-| Brand voice / tone | −1.5 |
-| Grammar / phrasing | −1 |
+| Brand voice / tone | −1.2 |
+| Arabic/grammar fix | −0.7 to −0.8 |
+| Rephrase only | −0.5 |
+| Formatting only | −0.2 |
 | Extra revision round | −1 |
 | Plagiarism 10–25% | −3 |
 | Plagiarism 25–50% | −6 |
@@ -1308,10 +1513,10 @@ def page_gdoc_submit():
         st.markdown("""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and revision history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Factual −3 · Missing −2 · Grammar −1</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Silent edits scored too</div><div class="timeline-sub">Diffs writer vs editor version automatically.</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −2 · Missing −1.5/−2 · Rephrase −0.5</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Silent edits scored too</div><div class="timeline-sub">Classifies grammar vs factual/source edits automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account as a Viewer so the system can read it.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
@@ -1479,10 +1684,14 @@ def render_gdoc_report(sub):
         comment_rows = brow("ok-row", "No comment deductions", "")
 
     diff_rows = ""
+    diff_summary = ded.get("diff_summary", {})
     for ctype, items in diff_by_type.items():
         w   = COMMENT_WEIGHTS.get(ctype, COMMENT_WEIGHTS["grammar"])
-        tot = sum(i["deduction"] for i in items)
-        diff_rows += brow("ded-row", f'Silent edits — {w["label"]} ({len(items)} × {w["deduction"]} pts)', f'−{round(tot,1)} pts')
+        raw_tot = sum(float(i.get("deduction", 0)) for i in items)
+        row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
+        diff_rows += brow(row_cls, f'Silent edits — {w["label"]} ({len(items)} found)', f'−{round(raw_tot,1)} raw')
+    if diff_summary.get("low_cap_applied"):
+        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
 
@@ -1571,22 +1780,46 @@ def render_gdoc_report(sub):
     diff_classified = sub.get("diff_classified", [])
     if diff_classified:
         st.divider()
+        diff_summary = ded.get("diff_summary", {})
         st.markdown(f"#### Silent editor edits — {len(diff_classified)} changes found")
-        st.caption("These are changes the editor made directly in the doc without leaving a comment.")
+        st.caption(
+            "The system separates low-impact wording cleanup from factual/source corrections. "
+            f"High-impact: {diff_summary.get('high_count', 0)} · "
+            f"Medium: {diff_summary.get('medium_count', 0)} · "
+            f"Low-impact: {diff_summary.get('low_count', 0)}"
+        )
+        if diff_summary.get("low_cap_applied"):
+            st.info(
+                f"Low-impact edits were capped: raw low-impact deduction was "
+                f"{diff_summary.get('raw_low_deduction')} pts, counted as "
+                f"{diff_summary.get('low_capped_deduction')} pts."
+            )
         for idx, d in enumerate(diff_classified, 1):
-            tag_label = {"replace": "✏️ Rewritten", "delete": "🗑 Deleted", "insert": "➕ Added"}.get(d["tag"], "Changed")
+            tag_label = {"replace": "Rewritten", "delete": "Deleted", "insert": "Added"}.get(d.get("tag"), "Changed")
+            original = _safe_html(d.get("original", "")[:300])
+            revised = _safe_html(d.get("revised", "")[:300])
+            reason = _safe_html(d.get("reason", ""))
+            old_fact = _safe_html(d.get("old_fact", ""))
+            new_fact = _safe_html(d.get("new_fact", ""))
+            severity = _safe_html(d.get("severity", ""))
+            meaning = "Meaning changed" if d.get("meaning_changed") else "No factual meaning change"
+            fact_line = ""
+            if old_fact or new_fact:
+                fact_line = f'<br><span style="font-size:10px;color:#64748b"><strong>Fact shift:</strong> {old_fact} → {new_fact}</span>'
             st.markdown(
-                f'<div class="cmt-card" style="border-left-color:{d["color"]}">'
-                f'<span style="font-size:11px;font-weight:700;color:#374151">{tag_label}</span>'
-                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{d["color"]};color:{d["tc"]};margin-left:8px">{d["label"]}</span>'
-                f'{"<br><span style=\\'font-size:11px;color:#dc2626;text-decoration:line-through\\'>" + d["original"][:200] + "</span>" if d.get("original") else ""}'
-                f'{"<br><span style=\\'font-size:11px;color:#059669\\'>" + d["revised"][:200] + "</span>" if d.get("revised") else ""}'
-                f'{"<br><span style=\\'font-size:10px;color:#9ca3af\\'>" + d["reason"] + "</span>" if d.get("reason") else ""}'
-                f'<div class="cmt-deduct">−{d["deduction"]} pts</div></div>',
+                f'<div class="cmt-card" style="border-left-color:{d.get("color", "#e5e7eb")}">'
+                f'<span style="font-size:11px;font-weight:700;color:#374151">{idx}. {tag_label}</span>'
+                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{d.get("color", "#f1f5f9")};color:{d.get("tc", "#475569")};margin-left:8px">{_safe_html(d.get("label", "Edit"))}</span>'
+                f'<span style="font-size:10px;font-weight:700;color:#6b7280;margin-left:6px">{severity} · {meaning}</span>'
+                f'{("<br><span style=\"font-size:11px;color:#dc2626;text-decoration:line-through\">" + original + "</span>") if original else ""}'
+                f'{("<br><span style=\"font-size:11px;color:#059669\">" + revised + "</span>") if revised else ""}'
+                f'{fact_line}'
+                f'{("<br><span style=\"font-size:10px;color:#9ca3af\">" + reason + "</span>") if reason else ""}'
+                f'<div class="cmt-deduct">−{d.get("deduction", 0)} pts raw</div></div>',
                 unsafe_allow_html=True)
     elif sub.get("writer_rev") is None and editor_rounds > 0:
         st.divider()
-        st.info("ℹ️ Silent edit scoring unavailable — the revision export could not be retrieved. Make sure the doc is shared with the service account as an Editor (not just Viewer), then resubmit.")
+        st.info("Silent edit scoring unavailable — the revision export could not be retrieved. Make sure the doc is shared with the service account as an Editor, then resubmit.")
 
     # Classified comments
     if classified:
