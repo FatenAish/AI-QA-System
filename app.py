@@ -915,8 +915,7 @@ def sidebar():
         st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
         st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
         page = st.radio("Navigation",
-                        ["📄  Submit article (file)",
-                         "🔗  Submit via Google Doc",
+                        ["🔗  Submit via Google Doc",
                          "◫  Dashboard"],
                         label_visibility="collapsed", key="sidebar_navigation")
         st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
@@ -937,9 +936,8 @@ def sidebar():
             "section[data-testid='stSidebar'] thead{display:none}</style>",
             unsafe_allow_html=True)
 
-        if "Google Doc" in page: return "gdoc"
-        if "Dashboard"  in page: return "dashboard"
-        return "submit"
+        if "Dashboard" in page: return "dashboard"
+        return "gdoc"
 
 # ── Submit page (file upload — existing) ──────────────────────────────────
 def page_submit():
@@ -1542,9 +1540,8 @@ def main():
     if "submissions" not in st.session_state:
         st.session_state.submissions = load_records()
     page = sidebar()
-    if page == "gdoc":      page_gdoc_submit()
-    elif page == "dashboard": page_dashboard()
-    else:                     page_submit()
+    if page == "dashboard": page_dashboard()
+    else:                   page_gdoc_submit()
 
 if __name__ == "__main__":
     main()
