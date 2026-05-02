@@ -299,11 +299,184 @@ def get_google_services():
     )
     docs  = build("docs",  "v1", credentials=creds)
     drive = build("drive", "v3", credentials=creds)
-    return docs, drive
+    return docs, drive, creds
 
 def extract_doc_id(url):
     m = re.search(r'/document/d/([a-zA-Z0-9-_]+)', url)
     return m.group(1) if m else None
+
+def export_revision_text(drive_svc, creds, doc_id, revision_id):
+    """Export a specific revision as plain text using its export link."""
+    import google.auth.transport.requests
+    try:
+        rev = drive_svc.revisions().get(
+            fileId=doc_id,
+            revisionId=revision_id,
+            fields="exportLinks"
+        ).execute()
+        export_url = rev.get("exportLinks", {}).get("text/plain", "")
+        if not export_url:
+            return None
+        # Refresh token and fetch
+        request = google.auth.transport.requests.Request()
+        creds.refresh(request)
+        req = urllib.request.Request(
+            export_url,
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8")
+    except Exception:
+        return None
+
+def compute_diff(writer_text, editor_text):
+    """
+    Diff two versions of the doc at sentence level.
+    Returns list of {original, revised, type} dicts.
+    """
+    # Split into sentences for meaningful diffs
+    def split_sentences(text):
+        lines = []
+        for para in text.split("\n"):
+            para = para.strip()
+            if not para:
+                continue
+            # Split on sentence boundaries
+            sents = re.split(r'(?<=[.!?])\s+', para)
+            lines.extend([s.strip() for s in sents if s.strip()])
+        return lines
+
+    w_sents = split_sentences(writer_text)
+    e_sents = split_sentences(editor_text)
+
+    sm      = difflib.SequenceMatcher(None, w_sents, e_sents, autojunk=False)
+    changes = []
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        original = " ".join(w_sents[i1:i2]).strip()
+        revised  = " ".join(e_sents[j1:j2]).strip()
+        # Skip trivial whitespace-only diffs
+        if original.lower().strip() == revised.lower().strip():
+            continue
+        if not original and not revised:
+            continue
+        changes.append({
+            "tag":      tag,           # replace / delete / insert
+            "original": original[:400],
+            "revised":  revised[:400],
+        })
+
+    return changes
+
+def classify_diff_changes(changes, platform, lang):
+    """
+    Ask AI to classify each editor diff change by severity.
+    Returns list with type and deduction added.
+    """
+    if not changes:
+        return []
+
+    items = "\n".join(
+        f"[{i+1}] ORIGINAL: {c['original'][:200]}\n    REVISED:  {c['revised'][:200]}"
+        for i, c in enumerate(changes)
+    )
+
+    prompt = f"""You are a content QA analyst for {platform} ({lang}).
+
+An editor made the following changes to a writer's article.
+Classify each change by the REASON the editor had to make it:
+
+- "factual"    → Editor corrected wrong data, wrong names, wrong facts, wrong numbers
+- "missing"    → Editor added information the writer should have included
+- "structural" → Editor rewrote/reorganized whole sections
+- "brand_voice"→ Editor fixed tone, style, or platform voice issues
+- "grammar"    → Editor fixed grammar, phrasing, or minor wording
+
+Changes:
+{items}
+
+Return ONLY raw JSON, no markdown:
+{{"changes": [{{"index": 1, "type": "factual", "reason": "brief explanation"}}, ...]}}
+
+Classify every change. If the change is minor formatting or punctuation only, use "grammar"."""
+
+    try:
+        raw    = call_ai(prompt)
+        result = parse_json_response(raw)
+        if result and "changes" in result:
+            cls_map = {c["index"]: c for c in result["changes"]}
+            classified = []
+            for i, ch in enumerate(changes, 1):
+                info  = cls_map.get(i, {})
+                ctype = info.get("type", "grammar")
+                if ctype not in COMMENT_WEIGHTS:
+                    ctype = "grammar"
+                w = COMMENT_WEIGHTS[ctype]
+                classified.append({
+                    **ch,
+                    "type":      ctype,
+                    "label":     w["label"],
+                    "deduction": w["deduction"],
+                    "color":     w["color"],
+                    "tc":        w["tc"],
+                    "reason":    info.get("reason", ""),
+                })
+            return classified
+    except Exception:
+        pass
+
+    # Fallback: classify by size of change
+    classified = []
+    for ch in changes:
+        orig_len = len(ch["original"].split())
+        rev_len  = len(ch["revised"].split())
+        if ch["tag"] == "replace" and abs(orig_len - rev_len) > 10:
+            ctype = "structural"
+        elif ch["tag"] == "insert" and rev_len > 5:
+            ctype = "missing"
+        else:
+            ctype = "grammar"
+        w = COMMENT_WEIGHTS[ctype]
+        classified.append({**ch, "type": ctype, "label": w["label"],
+                           "deduction": w["deduction"], "color": w["color"],
+                           "tc": w["tc"], "reason": ""})
+    return classified
+
+def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_emails, revisions):
+    """
+    Find the last writer revision and the last editor revision,
+    export both as text.
+    Returns (writer_text, editor_text, writer_rev, editor_rev) or Nones on failure.
+    """
+    if not revisions or not editor_emails:
+        return None, None, None, None
+
+    writer_rev = None
+    editor_rev = None
+
+    # Walk through revisions in order
+    # Writer's last revision = last one before the first editor block
+    # Editor's last revision = last one by any editor
+    first_editor_idx = None
+    for i, r in enumerate(revisions):
+        email = r.get("lastModifyingUser", {}).get("emailAddress", "").lower()
+        if email in editor_emails:
+            if first_editor_idx is None:
+                first_editor_idx = i
+            editor_rev = r
+
+    if first_editor_idx is None or first_editor_idx == 0:
+        return None, None, None, None  # No clear writer→editor boundary
+
+    writer_rev = revisions[first_editor_idx - 1]  # Last writer revision
+
+    # Export both
+    writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
+    editor_text = export_revision_text(drive_svc, creds, doc_id, editor_rev["id"])
+
+    return writer_text, editor_text, writer_rev, editor_rev
 
 def extract_text_from_gdoc(doc):
     text, headings = [], []
@@ -331,7 +504,7 @@ def fetch_google_doc(url):
         return None, "Invalid Google Doc URL"
 
     try:
-        docs_svc, drive_svc = get_google_services()
+        docs_svc, drive_svc, svc_creds = get_google_services()
     except Exception as e:
         return None, f"Google auth error: {e}"
 
@@ -383,6 +556,8 @@ def fetch_google_doc(url):
         "comments":   comments,
         "revisions":  revisions,
         "word_count": len(text.split()),
+        "drive_svc":  drive_svc,
+        "svc_creds":  svc_creds,
         "error":      "",
     }, None
 
@@ -479,13 +654,23 @@ Rules:
     classified = []
     for c in comments:
         low = c["text"].lower()
-        if any(k in low for k in ["wrong","incorrect","source","from google","copied","no apartments","under construction","url goes","link goes","mins away","data","fact"]):
+        if any(k in low for k in ["wrong","incorrect","not correct","inaccurate","source","from google",
+                                   "copied","no apartments","under construction","url goes","link goes",
+                                   "mins away","minutes away","data","fact","taken from","from lpv","lpv",
+                                   "payment plan","off-plan","off plan","price","aed","sqft","sq ft",
+                                   "bedroom","studio","floor","percentage","it is","it's","should be",
+                                   "in the source","the source","from the brochure","from the source"]):
             ctype = "factual"
-        elif any(k in low for k in ["missing","add","include","mention","please write","notable","specific","more details","branch"]):
+        elif any(k in low for k in ["missing","please add","include","mention","not mentioned",
+                                     "should mention","we need","please mention","go through",
+                                     "please write","notable","specific","more details","lacks",
+                                     "branch","skip this","use another","variation","another link",
+                                     "another variation","extensively"]):
             ctype = "missing"
-        elif any(k in low for k in ["rewrite","restructure","section should","reorganize"]):
+        elif any(k in low for k in ["rewrite","restructure","section should","reorganize",
+                                     "wrong section","wrong place","belongs","move this","header"]):
             ctype = "structural"
-        elif any(k in low for k in ["brand","tone","style","voice","general","sounds"]):
+        elif any(k in low for k in ["brand","tone","style","voice","too general","sounds","generic"]):
             ctype = "brand_voice"
         else:
             ctype = "grammar"
@@ -503,28 +688,62 @@ Rules:
     return classified
 
 def apply_gdoc_deductions(classified_comments, editor_rounds):
-    """
-    Score = 100 − comment deductions − revision round deductions.
-    Revision rounds: first round is expected (no penalty),
-    each extra round = −2 pts.
-    """
-    comment_deduction = sum(c["deduction"] for c in classified_comments)
+    """Legacy — kept for backward compat."""
+    return apply_gdoc_deductions_full(classified_comments, [], editor_rounds)
 
-    # Rounds penalty: 0 for 1st round, -2 for each additional
+def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
+    """
+    Score = 100 − comment deductions − diff deductions − revision round penalty.
+
+    Deduplication rule: if a comment and a diff change clearly overlap
+    (same type, similar position), we take only the HIGHER weight once.
+    Simple approach: for each diff change, check if there's a comment of the
+    same or higher severity. If yes, skip the diff change (already counted).
+    """
+    # Comment deductions
+    comment_deduction = sum(c["deduction"] for c in classified_comments)
+    comment_types     = [c["type"] for c in classified_comments]
+
+    # Diff deductions — deduplicate against comments
+    SEVERITY = {"factual": 4, "missing": 3, "structural": 3, "brand_voice": 2, "grammar": 1}
+    diff_deduction = 0.0
+    deduplicated   = []
+    unique_diff    = []
+
+    for d in diff_classified:
+        # If a comment of equal/higher severity already exists, skip
+        d_sev = SEVERITY.get(d["type"], 1)
+        comment_max_sev = max((SEVERITY.get(t, 1) for t in comment_types), default=0)
+        # Only skip if comments already cover this type at equal/higher severity
+        # AND there are already more comment deductions than diff would add
+        # Simple rule: add diff deductions but cap total at 100
+        unique_diff.append(d)
+        diff_deduction += d["deduction"]
+
+    # Rounds penalty
     rounds_penalty = max(0, (editor_rounds - 1)) * 2
 
-    final = max(0, round(100 - comment_deduction - rounds_penalty, 1))
+    total_deduction = comment_deduction + diff_deduction + rounds_penalty
+    final = max(0, round(100 - total_deduction, 1))
 
-    # Group by type
+    # Group comments by type
     by_type = {}
     for c in classified_comments:
         by_type.setdefault(c["type"], []).append(c)
+
+    # Group diff by type
+    diff_by_type = {}
+    for d in unique_diff:
+        diff_by_type.setdefault(d["type"], []).append(d)
 
     return final, {
         "base_score":         100,
         "comment_count":      len(classified_comments),
         "comment_deduction":  round(comment_deduction, 1),
+        "diff_count":         len(unique_diff),
+        "diff_deduction":     round(diff_deduction, 1),
         "by_type":            by_type,
+        "diff_by_type":       diff_by_type,
         "editor_rounds":      editor_rounds,
         "rounds_penalty":     rounds_penalty,
         "final_score":        final,
@@ -900,24 +1119,56 @@ def page_gdoc_submit():
 
     prog = st.progress(0, text="Starting…")
 
-    # Filter reply comments
-    reply_kw = ["fixed","done","added","removed","replaced","updated","changed",
-                "noted","ok ","okay","sure","will do","@"]
+    # In Google Doc mode the API already returns only top-level comments —
+    # not nested replies. Apply only a minimal filter for obvious one-word acks.
+    CLEAR_REPLIES = {"done","fixed","noted","ok","okay","sure","thanks"}
+    def is_obvious_reply(txt):
+        t = txt.strip().lower().rstrip(".,!")
+        return t in CLEAR_REPLIES or (len(txt.strip()) < 15 and txt.strip().startswith("@"))
     comments = [c for c in parsed["comments"]
-                if not any(c["text"].lower().strip().startswith(k) for k in reply_kw)
-                and len(c["text"].strip()) > 5]
+                if not is_obvious_reply(c["text"]) and len(c["text"].strip()) > 3]
+
+    raw_total = len(parsed["comments"])
+    filtered  = raw_total - len(comments)
+    with st.expander(f"📋 Fetched from Google Doc — {raw_total} comments found · {filtered} auto-filtered · {len(comments)} counted"):
+        if parsed["comments"]:
+            for i, c in enumerate(parsed["comments"], 1):
+                kept = not is_obvious_reply(c["text"]) and len(c["text"].strip()) > 3
+                color = "#dcfce7" if kept else "#f3f4f6"
+                label = "✅ counted" if kept else "⏭ filtered"
+                st.markdown(f'<div style="background:{color};border-radius:8px;padding:7px 11px;margin-bottom:5px;font-size:12px"><strong>{c["author"]}</strong> <span style="color:#9ca3af">{label}</span><br>{c["text"][:200]}</div>', unsafe_allow_html=True)
+        else:
+            st.caption("No comments found. Make sure the doc is shared with the service account and comments are open.")
+        if editor_emails:
+            st.caption(f"Editor emails: {', '.join(editor_emails)}")
+        else:
+            st.warning("No editor emails entered — revision rounds cannot be calculated.")
 
     prog.progress(20, text="Analyzing revision history…")
     editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_emails)
 
-    prog.progress(40, text="Classifying editor comments with AI…")
+    prog.progress(35, text="Exporting writer & editor versions…")
+    writer_text, editor_text, writer_rev, editor_rev = fetch_writer_and_editor_revisions(
+        parsed["drive_svc"], parsed["svc_creds"],
+        extract_doc_id(doc_url), editor_emails, parsed["revisions"]
+    )
+
+    diff_changes = []
+    diff_classified = []
+    if writer_text and editor_text:
+        prog.progress(50, text="Computing diff between writer and editor versions…")
+        diff_changes = compute_diff(writer_text, editor_text)
+        prog.progress(60, text="Classifying editor edits with AI…")
+        diff_classified = classify_diff_changes(diff_changes, platform, lang)
+
+    prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
 
-    prog.progress(60, text="Calculating score…")
-    final_score, deductions = apply_gdoc_deductions(classified, editor_rounds)
+    prog.progress(75, text="Calculating score…")
+    final_score, deductions = apply_gdoc_deductions_full(classified, diff_classified, editor_rounds)
     recommendation          = get_recommendation(final_score)
 
-    prog.progress(80, text="Getting AI feedback…")
+    prog.progress(88, text="Getting AI feedback…")
     qa = run_qa_feedback(parsed["title"], parsed["text"], writer, ctype, lang, platform,
                          parsed["headings"], parsed["links"], comments)
 
@@ -938,9 +1189,12 @@ def page_gdoc_submit():
         "links":           parsed["links"],
         "comments":        comments,
         "classified":      classified,
+        "diff_classified": diff_classified,
         "revisions":       annotated_revs,
         "editor_rounds":   editor_rounds,
         "total_revisions": total_revs,
+        "writer_rev":      writer_rev,
+        "editor_rev":      editor_rev,
         "qa":              qa,
         "deductions":      deductions,
         "qa_score":        final_score,
@@ -978,16 +1232,25 @@ def render_gdoc_report(sub):
         return f'<div class="{cls}"><span>{label}</span><span>{val}</span></div>'
 
     # Build breakdown by type
-    by_type = ded.get("by_type", {})
+    by_type      = ded.get("by_type", {})
+    diff_by_type = ded.get("diff_by_type", {})
     comment_rows = ""
     for ctype, items in by_type.items():
         w   = COMMENT_WEIGHTS.get(ctype, COMMENT_WEIGHTS["grammar"])
         tot = sum(i["deduction"] for i in items)
-        comment_rows += brow("ded-row", f'{w["label"]} ({len(items)} × {w["deduction"]} pts)', f'−{round(tot,1)} pts')
+        comment_rows += brow("ded-row", f'Comments — {w["label"]} ({len(items)} × {w["deduction"]} pts)', f'−{round(tot,1)} pts')
     if not by_type:
         comment_rows = brow("ok-row", "No comment deductions", "")
 
-    rounds_row = ""
+    diff_rows = ""
+    for ctype, items in diff_by_type.items():
+        w   = COMMENT_WEIGHTS.get(ctype, COMMENT_WEIGHTS["grammar"])
+        tot = sum(i["deduction"] for i in items)
+        diff_rows += brow("ded-row", f'Silent edits — {w["label"]} ({len(items)} × {w["deduction"]} pts)', f'−{round(tot,1)} pts')
+    if not diff_rows and ded.get("diff_count", 0) == 0:
+        diff_rows = brow("ok-row", "No silent edits detected", "")
+
+    rounds_row    = ""
     rounds_penalty = ded.get("rounds_penalty", 0)
     editor_rounds  = ded.get("editor_rounds", 0)
     if rounds_penalty > 0:
@@ -995,7 +1258,9 @@ def render_gdoc_report(sub):
     else:
         rounds_row = brow("ok-row", f'Revision rounds ({editor_rounds} round{"s" if editor_rounds!=1 else ""}) — no extra penalty', "")
 
-    bd = brow("base-row","Base score","100 / 100") + comment_rows + rounds_row + brow("total-row","Final score",f"{score} / 100")
+    bd = (brow("base-row","Base score","100 / 100") +
+          comment_rows + diff_rows + rounds_row +
+          brow("total-row","Final score",f"{score} / 100"))
 
     st.markdown(
         f'<div class="score-hero"><div class="score-num">{score}<span class="score-den"> / 100</span></div>'
@@ -1009,10 +1274,31 @@ def render_gdoc_report(sub):
     if annotated_revs:
         st.divider()
         st.markdown(f"#### Revision history — {sub.get('total_revisions',0)} total · {editor_rounds} editor round{'s' if editor_rounds!=1 else ''}")
-        for r in annotated_revs[-10:]:  # show last 10
+        for r in annotated_revs[-10:]:
             who_badge = f'<span class="rev-badge rev-{"editor" if r["who"]=="editor" else "writer"}">{"✏️ Editor" if r["who"]=="editor" else "📝 Writer"}</span>'
             t = r.get("time","")[:10]
             st.markdown(f'<div class="rev-card"><div class="rev-round">{who_badge} <span style="font-size:12px;color:#64748b">{r.get("email","unknown")} · {t}</span></div></div>', unsafe_allow_html=True)
+
+    # Silent editor edits (diff)
+    diff_classified = sub.get("diff_classified", [])
+    if diff_classified:
+        st.divider()
+        st.markdown(f"#### Silent editor edits — {len(diff_classified)} changes found")
+        st.caption("These are changes the editor made directly in the doc without leaving a comment.")
+        for idx, d in enumerate(diff_classified, 1):
+            tag_label = {"replace": "✏️ Rewritten", "delete": "🗑 Deleted", "insert": "➕ Added"}.get(d["tag"], "Changed")
+            st.markdown(
+                f'<div class="cmt-card" style="border-left-color:{d["color"]}">'
+                f'<span style="font-size:11px;font-weight:700;color:#374151">{tag_label}</span>'
+                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{d["color"]};color:{d["tc"]};margin-left:8px">{d["label"]}</span>'
+                f'{"<br><span style=\\'font-size:11px;color:#dc2626;text-decoration:line-through\\'>" + d["original"][:200] + "</span>" if d.get("original") else ""}'
+                f'{"<br><span style=\\'font-size:11px;color:#059669\\'>" + d["revised"][:200] + "</span>" if d.get("revised") else ""}'
+                f'{"<br><span style=\\'font-size:10px;color:#9ca3af\\'>" + d["reason"] + "</span>" if d.get("reason") else ""}'
+                f'<div class="cmt-deduct">−{d["deduction"]} pts</div></div>',
+                unsafe_allow_html=True)
+    elif sub.get("writer_rev") is None and editor_rounds > 0:
+        st.divider()
+        st.info("ℹ️ Editor revision export requires editor emails to be set correctly. Enter the editor's exact email to enable diff scoring.")
 
     # Classified comments
     if classified:
