@@ -323,9 +323,10 @@ def extract_doc_id(url):
     return m.group(1) if m else None
 
 def export_revision_text(drive_svc, creds, doc_id, revision_id):
-    """Export a specific revision as plain text using its export link."""
-    import google.auth.transport.requests
+    """Export a specific revision as plain text."""
     try:
+        import google.auth.transport.requests
+        # Get export link for this revision
         rev = drive_svc.revisions().get(
             fileId=doc_id,
             revisionId=revision_id,
@@ -334,16 +335,17 @@ def export_revision_text(drive_svc, creds, doc_id, revision_id):
         export_url = rev.get("exportLinks", {}).get("text/plain", "")
         if not export_url:
             return None
-        # Refresh token and fetch
-        request = google.auth.transport.requests.Request()
-        creds.refresh(request)
+        # Refresh credentials to get a valid token
+        auth_req = google.auth.transport.requests.Request()
+        if not creds.valid:
+            creds.refresh(auth_req)
         req = urllib.request.Request(
             export_url,
             headers={"Authorization": f"Bearer {creds.token}"}
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8")
-    except Exception:
+    except Exception as e:
         return None
 
 def compute_diff(writer_text, editor_text):
@@ -913,106 +915,139 @@ def get_grade(score):
 
 # ── Plagiarism detection ───────────────────────────────────────────────────
 def fetch_page_text(url, timeout=8):
-    """Fetch a URL and return plain text (HTML stripped)."""
+    """Fetch a URL and return plain text. Returns empty string on failure."""
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; QABot/1.0)"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return ""
             raw = resp.read().decode("utf-8", errors="ignore")
-        # Strip HTML tags
         raw = re.sub(r'<style[^>]*>.*?</style>', ' ', raw, flags=re.DOTALL)
         raw = re.sub(r'<script[^>]*>.*?</script>', ' ', raw, flags=re.DOTALL)
         raw = re.sub(r'<[^>]+>', ' ', raw)
         raw = re.sub(r'\s+', ' ', raw).strip()
-        return raw[:50000]  # cap at 50k chars
+        return raw[:40000]
     except Exception:
         return ""
 
-def sentence_similarity(s1, s2):
-    """Simple word-overlap similarity between two strings."""
-    w1 = set(s1.lower().split())
-    w2 = set(s2.lower().split())
-    if not w1 or not w2:
-        return 0.0
-    return len(w1 & w2) / max(len(w1), len(w2))
-
-def check_plagiarism(article_text, doc_links):
+def check_plagiarism_ai(article_text, doc_links):
     """
-    Check article text against:
-    1. Links found inside the doc
-    2. Fixed known sources
-
-    Returns {
-        pct: float,           # % of article sentences that match a source
-        flagged: [...],       # list of {sentence, source, similarity}
-        sources_checked: [...] # list of source names checked
-    }
+    Two-stage plagiarism check:
+    1. Fetch accessible doc links (non-portal sources like developer/gov sites)
+    2. Use AI to detect brochure-copied language in the article text
+    Returns {pct, flagged, sources_checked, method}
     """
-    # Build source list: doc links first, then known sources
-    sources_to_check = []
-    for link in doc_links[:6]:  # max 6 doc links
-        if link.startswith("http"):
-            domain = re.sub(r'https?://(www\.)?', '', link).split('/')[0]
-            sources_to_check.append({"name": domain, "url": link})
-    for s in KNOWN_SOURCES:
-        sources_to_check.append(s)
+    # Stage 1: try to fetch doc links (skip known blocked portals)
+    BLOCKED_DOMAINS = {"bayut.com", "propertyfinder.ae", "dubizzle.com",
+                       "google.com", "facebook.com", "instagram.com", "twitter.com"}
+    fetched_sources = []
+    for link in doc_links[:8]:
+        if not link.startswith("http"):
+            continue
+        domain = re.sub(r'https?://(www\.)?', '', link).split('/')[0].lower()
+        if any(b in domain for b in BLOCKED_DOMAINS):
+            continue
+        text = fetch_page_text(link)
+        if text and len(text) > 200:
+            fetched_sources.append({"name": domain, "url": link, "text": text})
 
-    # Extract article sentences (min 12 words to avoid short bullets)
-    sentences = [
+    # Stage 2: sentence matching against fetched sources
+    article_sentences = [
         s.strip() for s in re.split(r'(?<=[.!?])\s+', article_text)
         if len(s.strip().split()) >= 12
     ]
-    if not sentences:
-        return {"pct": 0, "flagged": [], "sources_checked": []}
+    flagged_from_sources = []
+    matched_idxs = set()
 
-    # Fetch source texts
-    fetched = []
-    for src in sources_to_check[:12]:  # cap total sources
-        text = fetch_page_text(src["url"])
-        if text:
-            fetched.append({"name": src["name"], "url": src["url"], "text": text})
-
-    if not fetched:
-        return {"pct": 0, "flagged": [], "sources_checked": [s["name"] for s in sources_to_check]}
-
-    # Check each sentence against all sources
-    flagged = []
-    matched = set()
-
-    for i, sent in enumerate(sentences):
-        best_sim  = 0.0
-        best_src  = None
-        for src in fetched:
-            # Sliding window over source text for efficiency
-            src_sentences = re.split(r'(?<=[.!?])\s+', src["text"])
-            for src_sent in src_sentences:
-                if len(src_sent.split()) < 8:
-                    continue
-                sim = sentence_similarity(sent, src_sent)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_src = src["name"]
-            # Also check direct substring (exact copy)
+    for src in fetched_sources:
+        for i, sent in enumerate(article_sentences):
+            if i in matched_idxs:
+                continue
             if sent.lower()[:60] in src["text"].lower():
-                best_sim  = 1.0
-                best_src  = src["name"]
-                break
-        if best_sim >= 0.75 and best_src:
-            matched.add(i)
-            flagged.append({
-                "sentence":   sent[:300],
-                "source":     best_src,
-                "similarity": round(best_sim * 100),
-            })
+                matched_idxs.add(i)
+                flagged_from_sources.append({
+                    "sentence":   sent[:300],
+                    "source":     src["name"],
+                    "similarity": 95,
+                    "method":     "exact match",
+                })
+            else:
+                w1 = set(sent.lower().split())
+                # Check against source sentences
+                for s_sent in re.split(r'(?<=[.!?])\s+', src["text"])[:500]:
+                    w2 = set(s_sent.lower().split())
+                    if len(w1) > 5 and len(w2) > 5:
+                        overlap = len(w1 & w2) / max(len(w1), len(w2))
+                        if overlap >= 0.78:
+                            matched_idxs.add(i)
+                            flagged_from_sources.append({
+                                "sentence":   sent[:300],
+                                "source":     src["name"],
+                                "similarity": round(overlap * 100),
+                                "method":     "high similarity",
+                            })
+                            break
 
-    pct = round(len(matched) / max(len(sentences), 1) * 100, 1)
+    source_pct = round(len(matched_idxs) / max(len(article_sentences), 1) * 100, 1)
+
+    # Stage 3: AI detection for brochure/marketing language
+    ai_flagged = []
+    ai_pct = 0.0
+    try:
+        prompt = f"""You are a plagiarism detector for UAE real estate content.
+
+Analyze this article and identify sentences that appear to be:
+1. Copied directly from developer brochures or marketing materials
+2. Copied from other real estate portals or listings
+3. Generic marketing copy not written originally by the author
+
+Article (first 3000 chars):
+{article_text[:3000]}
+
+Return ONLY raw JSON:
+{{
+  "plagiarism_pct": <0-100 integer estimate of % copied content>,
+  "flagged_sentences": [
+    {{"sentence": "<copied sentence>", "reason": "<why it looks copied>", "likely_source": "<developer name or portal>"}}
+  ]
+}}
+
+Be conservative — only flag sentences that are clearly not original writing. Max 8 sentences."""
+
+        raw    = call_ai(prompt)
+        result = parse_json_response(raw)
+        if result:
+            ai_pct = float(result.get("plagiarism_pct", 0))
+            for f in result.get("flagged_sentences", [])[:8]:
+                ai_flagged.append({
+                    "sentence":   f.get("sentence", "")[:300],
+                    "source":     f.get("likely_source", "Unknown source"),
+                    "similarity": ai_pct,
+                    "method":     f.get("reason", "AI detected"),
+                })
+    except Exception:
+        pass
+
+    # Combine: take max of source-match and AI estimate
+    final_pct = max(source_pct, ai_pct)
+    all_flagged = flagged_from_sources + ai_flagged
+
+    sources_checked = [s["name"] for s in fetched_sources]
+    if ai_pct > 0:
+        sources_checked.append("AI content analysis")
 
     return {
-        "pct":             pct,
-        "flagged":         flagged[:10],  # show max 10
-        "sources_checked": [s["name"] for s in fetched],
+        "pct":             round(final_pct, 1),
+        "flagged":         all_flagged[:10],
+        "sources_checked": sources_checked if sources_checked else ["AI content analysis"],
+        "method":          "hybrid",
     }
 
 def plag_deduction(pct):
@@ -1263,7 +1298,7 @@ def page_gdoc_submit():
     classified = classify_comments_ai(comments, platform, lang)
 
     prog.progress(72, text="Checking plagiarism against sources…")
-    plag_result = check_plagiarism(parsed["text"], parsed["links"])
+    plag_result = check_plagiarism_ai(parsed["text"], parsed["links"])
 
     prog.progress(78, text="Calculating score…")
     final_score, deductions = apply_gdoc_deductions_full(
@@ -1454,7 +1489,7 @@ def render_gdoc_report(sub):
                 unsafe_allow_html=True)
     elif sub.get("writer_rev") is None and editor_rounds > 0:
         st.divider()
-        st.info("ℹ️ Editor revision export requires editor emails to be set correctly. Enter the editor's exact email to enable diff scoring.")
+        st.info("ℹ️ Silent edit scoring unavailable — the revision export could not be retrieved. Make sure the doc is shared with the service account as an Editor (not just Viewer), then resubmit.")
 
     # Classified comments
     if classified:
