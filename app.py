@@ -915,7 +915,7 @@ def sidebar():
         st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
         st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
         page = st.radio("Navigation",
-                        ["🔗  Submit via Google Doc",
+                        ["📝  New evaluation",
                          "◫  Dashboard"],
                         label_visibility="collapsed", key="sidebar_navigation")
         st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
@@ -1043,7 +1043,7 @@ def page_submit():
 # ── Google Doc submit page ─────────────────────────────────────────────────
 def page_gdoc_submit():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">🔗 Google Doc mode</div><h1>Submit via Google Doc</h1><p>Paste the doc link — scores are based on editor comments and revision rounds.</p></div><div class="qa-hero-icon">📄</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments, revision history, and silent edits are all scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
 
     if not GOOGLE_OK:
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
@@ -1053,7 +1053,7 @@ def page_gdoc_submit():
 
     with main_col:
         with st.container(border=True):
-            st.markdown('<div class="form-card-header"><div><div class="form-card-title">New Google Doc submission</div><div class="form-card-sub">The doc must be shared with the service account email.</div></div><div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="form-card-header"><div><div class="form-card-title">New submission</div><div class="form-card-sub">Fill in the details and paste the Google Doc link.</div></div><div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div></div>', unsafe_allow_html=True)
             with st.form("gdoc_form"):
                 c1, c2 = st.columns(2)
                 writer      = c1.text_input("Writer name",        placeholder="e.g. Sarah Ahmed")
@@ -1083,11 +1083,11 @@ def page_gdoc_submit():
     with side_col:
         st.markdown("""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
-  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments, revision history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies comments</div><div class="timeline-sub">Factual −3 · Missing −2 · Grammar −1</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Revision rounds</div><div class="timeline-sub">Each extra editor round = −2 pts.</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and revision history.</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Factual −3 · Missing −2 · Grammar −1</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Silent edits scored too</div><div class="timeline-sub">Diffs writer vs editor version automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">📋 Before submitting</div>Share the Google Doc with the service account email as a Viewer. Editor comments must still be open (not deleted).</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account as a Viewer so the system can read it.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
