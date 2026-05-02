@@ -975,15 +975,35 @@ def sidebar():
 
         st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
 
-        st.markdown("""<div class="sb-deduction-wrap"><div class="sb-deduction-card">
+        with st.container():
 
-            <div class="sb-deduction-row"><span>Data accuracy comment</span><span class="sb-pill">−1.5</span></div>
+            st.markdown(
 
-            <div class="sb-deduction-row"><span>Missing info comment</span><span class="sb-pill">−1.5</span></div>
+                """
 
-            <div class="sb-deduction-row"><span>Grammar / rephrasing</span><span class="sb-pill">−1</span></div>
+| Rule | Pts |
 
-        </div></div>""", unsafe_allow_html=True)
+|---|---|
+
+| Data accuracy comment | −1.5 |
+
+| Missing info comment | −1.5 |
+
+| Grammar / rephrasing | −1 |
+
+""")
+
+        st.markdown(
+
+            "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
+
+            "section[data-testid='stSidebar'] td,section[data-testid='stSidebar'] th{padding:7px 10px;border-bottom:1px solid #f0f0f0}"
+
+            "section[data-testid='stSidebar'] td:last-child{color:#ef4444;font-weight:700;text-align:right}"
+
+            "section[data-testid='stSidebar'] thead{display:none}</style>",
+
+            unsafe_allow_html=True)
 
         return "Dashboard" if "Dashboard" in page else "Submit article"
 
