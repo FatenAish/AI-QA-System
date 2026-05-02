@@ -444,39 +444,27 @@ Classify every change. If the change is minor formatting or punctuation only, us
                            "tc": w["tc"], "reason": ""})
     return classified
 
-def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_emails, revisions):
-    """
-    Find the last writer revision and the last editor revision,
-    export both as text.
-    Returns (writer_text, editor_text, writer_rev, editor_rev) or Nones on failure.
-    """
-    if not revisions or not editor_emails:
+def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_name, revisions):
+    """Diff writer vs editor version. Matches by display name, falls back to first vs last."""
+    if not revisions or len(revisions) < 2:
         return None, None, None, None
+    editor_name_lower = editor_name.strip().lower() if editor_name else ""
+    writer_rev = editor_rev = None
+    if editor_name_lower:
+        first_idx = None
+        for i, r in enumerate(revisions):
+            display = r.get("lastModifyingUser", {}).get("displayName", "").lower()
+            if editor_name_lower in display or display in editor_name_lower:
+                if first_idx is None: first_idx = i
+                editor_rev = r
+        if first_idx and first_idx > 0:
+            writer_rev = revisions[first_idx - 1]
+    if writer_rev is None or editor_rev is None:
+        writer_rev, editor_rev = revisions[0], revisions[-1]
+    w = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
+    e = export_revision_text(drive_svc, creds, doc_id, editor_rev["id"])
+    return w, e, writer_rev, editor_rev
 
-    writer_rev = None
-    editor_rev = None
-
-    # Walk through revisions in order
-    # Writer's last revision = last one before the first editor block
-    # Editor's last revision = last one by any editor
-    first_editor_idx = None
-    for i, r in enumerate(revisions):
-        email = r.get("lastModifyingUser", {}).get("emailAddress", "").lower()
-        if email in editor_emails:
-            if first_editor_idx is None:
-                first_editor_idx = i
-            editor_rev = r
-
-    if first_editor_idx is None or first_editor_idx == 0:
-        return None, None, None, None  # No clear writer→editor boundary
-
-    writer_rev = revisions[first_editor_idx - 1]  # Last writer revision
-
-    # Export both
-    writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
-    editor_text = export_revision_text(drive_svc, creds, doc_id, editor_rev["id"])
-
-    return writer_text, editor_text, writer_rev, editor_rev
 
 def extract_text_from_gdoc(doc):
     text, headings = [], []
@@ -569,27 +557,33 @@ def get_editor_emails():
     except Exception:
         return []
 
-def count_revision_rounds(revisions, editor_emails):
+def count_revision_rounds(revisions, editor_name):
     """
-    Count how many distinct rounds the editor touched the doc.
-    A round = consecutive block of editor revisions.
-    Returns (editor_rounds, total_revisions, annotated_list)
+    Count editor rounds by matching lastModifyingUser.displayName
+    against the editor name entered in the form.
     """
     if not revisions:
         return 0, 0, []
 
+    editor_name_lower = editor_name.strip().lower() if editor_name else ""
+
     annotated = []
     for r in revisions:
-        email = r.get("lastModifyingUser", {}).get("emailAddress", "").lower()
-        who   = "editor" if email in editor_emails else "writer"
+        display = r.get("lastModifyingUser", {}).get("displayName", "")
+        email   = r.get("lastModifyingUser", {}).get("emailAddress", "")
+        # Match if name contains editor name or vice versa
+        is_editor = (editor_name_lower and
+                     (editor_name_lower in display.lower() or
+                      display.lower() in editor_name_lower))
+        who = "editor" if is_editor else "writer"
         annotated.append({
-            "id":   r.get("id"),
-            "time": r.get("modifiedTime", ""),
-            "email": email,
-            "who":  who,
+            "id":      r.get("id"),
+            "time":    r.get("modifiedTime", ""),
+            "email":   email or display,  # show display name if no email
+            "display": display,
+            "who":     who,
         })
 
-    # Count distinct editor blocks
     rounds = 0
     prev   = None
     for r in annotated:
@@ -1079,18 +1073,12 @@ def page_gdoc_submit():
                                         label_visibility="collapsed")
                 st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
-                editor_emails_input = st.text_input(
-                    "Editor emails (comma-separated)",
-                    placeholder="faten@bayut.com, muhammad@bayut.com",
-                    help="Emails of people who are editors — used to identify revision rounds"
-                )
-
                 st.markdown(f"""
 <div class="precheck">
   <div class="precheck-item {'done' if writer.strip() else ''}"><span class="precheck-dot">✓</span><span>Writer name</span></div>
   <div class="precheck-item {'done' if editor_name.strip() else ''}"><span class="precheck-dot">✓</span><span>Editor name</span></div>
   <div class="precheck-item {'done' if doc_url.strip() else ''}"><span class="precheck-dot">✓</span><span>Doc link</span></div>
-  <div class="precheck-item {'done' if editor_emails_input.strip() else ''}"><span class="precheck-dot">✓</span><span>Editor emails</span></div>
+  <div class="precheck-item done"><span class="precheck-dot">✓</span><span>Ready</span></div>
 </div>""", unsafe_allow_html=True)
                 go = st.form_submit_button("✦  Run full evaluation", use_container_width=True, type="primary")
 
@@ -1106,9 +1094,6 @@ def page_gdoc_submit():
     if not go: return
     if not writer or not doc_url:
         st.error("Please fill in writer name and Google Doc URL."); return
-
-    editor_emails = [e.strip().lower() for e in editor_emails_input.split(",") if e.strip()]
-    editor_emails += get_editor_emails()  # also add from secrets
 
     with st.spinner("Fetching Google Doc…"):
         parsed, err = fetch_google_doc(doc_url)
@@ -1139,18 +1124,18 @@ def page_gdoc_submit():
                 st.markdown(f'<div style="background:{color};border-radius:8px;padding:7px 11px;margin-bottom:5px;font-size:12px"><strong>{c["author"]}</strong> <span style="color:#9ca3af">{label}</span><br>{c["text"][:200]}</div>', unsafe_allow_html=True)
         else:
             st.caption("No comments found. Make sure the doc is shared with the service account and comments are open.")
-        if editor_emails:
-            st.caption(f"Editor emails: {', '.join(editor_emails)}")
+        if editor_name:
+            st.caption(f"Matching editor revisions by name: {editor_name}")
         else:
-            st.warning("No editor emails entered — revision rounds cannot be calculated.")
+            st.warning("No editor name entered — revision rounds will not be calculated.")
 
     prog.progress(20, text="Analyzing revision history…")
-    editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_emails)
+    editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_name)
 
     prog.progress(35, text="Exporting writer & editor versions…")
     writer_text, editor_text, writer_rev, editor_rev = fetch_writer_and_editor_revisions(
         parsed["drive_svc"], parsed["svc_creds"],
-        extract_doc_id(doc_url), editor_emails, parsed["revisions"]
+        extract_doc_id(doc_url), editor_name, parsed["revisions"]
     )
 
     diff_changes = []
@@ -1273,11 +1258,21 @@ def render_gdoc_report(sub):
     annotated_revs = sub.get("revisions", [])
     if annotated_revs:
         st.divider()
+        # Collect unique emails to show hint
+        all_emails = list(dict.fromkeys(
+            r.get("email","") for r in annotated_revs if r.get("email")
+        ))
         st.markdown(f"#### Revision history — {sub.get('total_revisions',0)} total · {editor_rounds} editor round{'s' if editor_rounds!=1 else ''}")
+        if editor_rounds == 0 and all_emails:
+            st.warning(
+                f"⚠️ 0 editor rounds detected. Google API returned these emails in the revisions: "
+                f"`{'` · `'.join(all_emails)}` — copy the editor's exact email into the **Editor emails** field and resubmit."
+            )
         for r in annotated_revs[-10:]:
             who_badge = f'<span class="rev-badge rev-{"editor" if r["who"]=="editor" else "writer"}">{"✏️ Editor" if r["who"]=="editor" else "📝 Writer"}</span>'
             t = r.get("time","")[:10]
-            st.markdown(f'<div class="rev-card"><div class="rev-round">{who_badge} <span style="font-size:12px;color:#64748b">{r.get("email","unknown")} · {t}</span></div></div>', unsafe_allow_html=True)
+            email_shown = r.get("email","unknown")
+            st.markdown(f'<div class="rev-card"><div class="rev-round">{who_badge} <span style="font-size:12px;color:#64748b">{email_shown} · {t}</span></div></div>', unsafe_allow_html=True)
 
     # Silent editor edits (diff)
     diff_classified = sub.get("diff_classified", [])
