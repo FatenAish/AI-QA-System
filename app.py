@@ -56,14 +56,31 @@ GRADE_MAP = [
     (0,  "F — Reject"),
 ]
 
-# Weighted comment types for Google Doc mode
+# Weighted comment types
 COMMENT_WEIGHTS = {
-    "factual":     {"label": "Factual error",       "deduction": 3.0,  "color": "#fee2e2", "tc": "#991b1b"},
+    "factual":     {"label": "Factual error",       "deduction": 2.0,  "color": "#fee2e2", "tc": "#991b1b"},
     "missing":     {"label": "Missing critical info","deduction": 2.0,  "color": "#fef3c7", "tc": "#92400e"},
-    "structural":  {"label": "Structural rewrite",  "deduction": 2.0,  "color": "#fde8d8", "tc": "#9a3412"},
+    "structural":  {"label": "Structural rewrite",  "deduction": 1.5,  "color": "#fde8d8", "tc": "#9a3412"},
     "brand_voice": {"label": "Brand voice / tone",  "deduction": 1.5,  "color": "#ede9fe", "tc": "#5b21b6"},
     "grammar":     {"label": "Grammar / phrasing",  "deduction": 1.0,  "color": "#f0f4ff", "tc": "#2D4A8A"},
 }
+
+REVISION_ROUND_PENALTY = 1.0  # per extra round
+
+# Known sources always checked for plagiarism
+KNOWN_SOURCES = [
+    {"name": "Bayut",            "url": "https://www.bayut.com"},
+    {"name": "Property Finder",  "url": "https://www.propertyfinder.ae"},
+    {"name": "Dubizzle",         "url": "https://www.dubizzle.com"},
+    {"name": "Emaar",            "url": "https://www.emaar.com"},
+    {"name": "Nakheel",          "url": "https://www.nakheel.com"},
+    {"name": "DAMAC",            "url": "https://www.damacproperties.com"},
+    {"name": "Aldar",            "url": "https://www.aldar.com"},
+    {"name": "Meraas",           "url": "https://www.meraas.com"},
+    {"name": "Sobha",            "url": "https://www.sobharealty.com"},
+    {"name": "Ellington",        "url": "https://www.ellingtonproperties.com"},
+    {"name": "Azizi",            "url": "https://www.azizidevelopments.com"},
+]
 
 RECORDS_FILE = "qa_records.json"
 
@@ -685,39 +702,23 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
     """Legacy — kept for backward compat."""
     return apply_gdoc_deductions_full(classified_comments, [], editor_rounds)
 
-def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
+def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds, plag_result=None):
     """
-    Score = 100 − comment deductions − diff deductions − revision round penalty.
-
-    Deduplication rule: if a comment and a diff change clearly overlap
-    (same type, similar position), we take only the HIGHER weight once.
-    Simple approach: for each diff change, check if there's a comment of the
-    same or higher severity. If yes, skip the diff change (already counted).
+    Score = 100 − comment deductions − diff deductions − rounds penalty − plagiarism deduction.
     """
-    # Comment deductions
     comment_deduction = sum(c["deduction"] for c in classified_comments)
-    comment_types     = [c["type"] for c in classified_comments]
 
-    # Diff deductions — deduplicate against comments
-    SEVERITY = {"factual": 4, "missing": 3, "structural": 3, "brand_voice": 2, "grammar": 1}
-    diff_deduction = 0.0
-    deduplicated   = []
-    unique_diff    = []
-
-    for d in diff_classified:
-        # If a comment of equal/higher severity already exists, skip
-        d_sev = SEVERITY.get(d["type"], 1)
-        comment_max_sev = max((SEVERITY.get(t, 1) for t in comment_types), default=0)
-        # Only skip if comments already cover this type at equal/higher severity
-        # AND there are already more comment deductions than diff would add
-        # Simple rule: add diff deductions but cap total at 100
-        unique_diff.append(d)
-        diff_deduction += d["deduction"]
+    # Diff deductions
+    diff_deduction = sum(d["deduction"] for d in diff_classified)
 
     # Rounds penalty
-    rounds_penalty = max(0, (editor_rounds - 1)) * 2
+    rounds_penalty = max(0, (editor_rounds - 1)) * REVISION_ROUND_PENALTY
 
-    total_deduction = comment_deduction + diff_deduction + rounds_penalty
+    # Plagiarism deduction
+    plag_pct = plag_result.get("pct", 0) if plag_result else 0
+    plag_ded = plag_deduction(plag_pct)
+
+    total_deduction = comment_deduction + diff_deduction + rounds_penalty + plag_ded
     final = max(0, round(100 - total_deduction, 1))
 
     # Group comments by type
@@ -725,21 +726,22 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
     for c in classified_comments:
         by_type.setdefault(c["type"], []).append(c)
 
-    # Group diff by type
     diff_by_type = {}
-    for d in unique_diff:
+    for d in diff_classified:
         diff_by_type.setdefault(d["type"], []).append(d)
 
     return final, {
         "base_score":         100,
         "comment_count":      len(classified_comments),
         "comment_deduction":  round(comment_deduction, 1),
-        "diff_count":         len(unique_diff),
+        "diff_count":         len(diff_classified),
         "diff_deduction":     round(diff_deduction, 1),
         "by_type":            by_type,
         "diff_by_type":       diff_by_type,
         "editor_rounds":      editor_rounds,
         "rounds_penalty":     rounds_penalty,
+        "plag_pct":           plag_pct,
+        "plag_deduction":     plag_ded,
         "final_score":        final,
     }
 
@@ -909,7 +911,117 @@ def get_grade(score):
         if score >= t: return label
     return GRADE_MAP[-1][1]
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
+# ── Plagiarism detection ───────────────────────────────────────────────────
+def fetch_page_text(url, timeout=8):
+    """Fetch a URL and return plain text (HTML stripped)."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; QABot/1.0)"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        # Strip HTML tags
+        raw = re.sub(r'<style[^>]*>.*?</style>', ' ', raw, flags=re.DOTALL)
+        raw = re.sub(r'<script[^>]*>.*?</script>', ' ', raw, flags=re.DOTALL)
+        raw = re.sub(r'<[^>]+>', ' ', raw)
+        raw = re.sub(r'\s+', ' ', raw).strip()
+        return raw[:50000]  # cap at 50k chars
+    except Exception:
+        return ""
+
+def sentence_similarity(s1, s2):
+    """Simple word-overlap similarity between two strings."""
+    w1 = set(s1.lower().split())
+    w2 = set(s2.lower().split())
+    if not w1 or not w2:
+        return 0.0
+    return len(w1 & w2) / max(len(w1), len(w2))
+
+def check_plagiarism(article_text, doc_links):
+    """
+    Check article text against:
+    1. Links found inside the doc
+    2. Fixed known sources
+
+    Returns {
+        pct: float,           # % of article sentences that match a source
+        flagged: [...],       # list of {sentence, source, similarity}
+        sources_checked: [...] # list of source names checked
+    }
+    """
+    # Build source list: doc links first, then known sources
+    sources_to_check = []
+    for link in doc_links[:6]:  # max 6 doc links
+        if link.startswith("http"):
+            domain = re.sub(r'https?://(www\.)?', '', link).split('/')[0]
+            sources_to_check.append({"name": domain, "url": link})
+    for s in KNOWN_SOURCES:
+        sources_to_check.append(s)
+
+    # Extract article sentences (min 12 words to avoid short bullets)
+    sentences = [
+        s.strip() for s in re.split(r'(?<=[.!?])\s+', article_text)
+        if len(s.strip().split()) >= 12
+    ]
+    if not sentences:
+        return {"pct": 0, "flagged": [], "sources_checked": []}
+
+    # Fetch source texts
+    fetched = []
+    for src in sources_to_check[:12]:  # cap total sources
+        text = fetch_page_text(src["url"])
+        if text:
+            fetched.append({"name": src["name"], "url": src["url"], "text": text})
+
+    if not fetched:
+        return {"pct": 0, "flagged": [], "sources_checked": [s["name"] for s in sources_to_check]}
+
+    # Check each sentence against all sources
+    flagged = []
+    matched = set()
+
+    for i, sent in enumerate(sentences):
+        best_sim  = 0.0
+        best_src  = None
+        for src in fetched:
+            # Sliding window over source text for efficiency
+            src_sentences = re.split(r'(?<=[.!?])\s+', src["text"])
+            for src_sent in src_sentences:
+                if len(src_sent.split()) < 8:
+                    continue
+                sim = sentence_similarity(sent, src_sent)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_src = src["name"]
+            # Also check direct substring (exact copy)
+            if sent.lower()[:60] in src["text"].lower():
+                best_sim  = 1.0
+                best_src  = src["name"]
+                break
+        if best_sim >= 0.75 and best_src:
+            matched.add(i)
+            flagged.append({
+                "sentence":   sent[:300],
+                "source":     best_src,
+                "similarity": round(best_sim * 100),
+            })
+
+    pct = round(len(matched) / max(len(sentences), 1) * 100, 1)
+
+    return {
+        "pct":             pct,
+        "flagged":         flagged[:10],  # show max 10
+        "sources_checked": [s["name"] for s in fetched],
+    }
+
+def plag_deduction(pct):
+    if pct >= 50: return 10.0
+    if pct >= 25: return 6.0
+    if pct >= 10: return 3.0
+    return 0.0
+
+
 def sidebar():
     with st.sidebar:
         st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
@@ -922,12 +1034,15 @@ def sidebar():
         st.markdown("""
 | Rule | Pts |
 |---|---|
-| Factual error | −3 |
+| Factual error | −2 |
 | Missing critical info | −2 |
-| Structural rewrite | −2 |
+| Structural rewrite | −1.5 |
 | Brand voice / tone | −1.5 |
 | Grammar / phrasing | −1 |
-| Extra revision round | −2 |
+| Extra revision round | −1 |
+| Plagiarism 10–25% | −3 |
+| Plagiarism 25–50% | −6 |
+| Plagiarism 50%+ | −10 |
 """)
         st.markdown(
             "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
@@ -1147,9 +1262,14 @@ def page_gdoc_submit():
     prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
 
-    prog.progress(75, text="Calculating score…")
-    final_score, deductions = apply_gdoc_deductions_full(classified, diff_classified, editor_rounds)
-    recommendation          = get_recommendation(final_score)
+    prog.progress(72, text="Checking plagiarism against sources…")
+    plag_result = check_plagiarism(parsed["text"], parsed["links"])
+
+    prog.progress(78, text="Calculating score…")
+    final_score, deductions = apply_gdoc_deductions_full(
+        classified, diff_classified, editor_rounds, plag_result
+    )
+    recommendation = get_recommendation(final_score)
 
     prog.progress(88, text="Getting AI feedback…")
     qa = run_qa_feedback(parsed["title"], parsed["text"], writer, ctype, lang, platform,
@@ -1178,6 +1298,7 @@ def page_gdoc_submit():
         "total_revisions": total_revs,
         "writer_rev":      writer_rev,
         "editor_rev":      editor_rev,
+        "plagiarism":      plag_result,
         "qa":              qa,
         "deductions":      deductions,
         "qa_score":        final_score,
@@ -1237,12 +1358,19 @@ def render_gdoc_report(sub):
     rounds_penalty = ded.get("rounds_penalty", 0)
     editor_rounds  = ded.get("editor_rounds", 0)
     if rounds_penalty > 0:
-        rounds_row = brow("ded-row", f'Revision rounds ({editor_rounds} rounds, {editor_rounds-1} extra × 2 pts)', f'−{rounds_penalty} pts')
+        rounds_row = brow("ded-row", f'Revision rounds ({editor_rounds} rounds, {editor_rounds-1} extra × 1 pt)', f'−{rounds_penalty} pts')
     else:
         rounds_row = brow("ok-row", f'Revision rounds ({editor_rounds} round{"s" if editor_rounds!=1 else ""}) — no extra penalty', "")
 
+    plag_pct = ded.get("plag_pct", 0)
+    plag_ded = ded.get("plag_deduction", 0)
+    if plag_ded > 0:
+        plag_row = brow("ded-row", f'Plagiarism {plag_pct}% similarity with sources', f'−{plag_ded} pts')
+    else:
+        plag_row = brow("ok-row", f'Plagiarism {plag_pct}% — within acceptable range', "")
+
     bd = (brow("base-row","Base score","100 / 100") +
-          comment_rows + diff_rows + rounds_row +
+          comment_rows + diff_rows + rounds_row + plag_row +
           brow("total-row","Final score",f"{score} / 100"))
 
     st.markdown(
@@ -1251,6 +1379,41 @@ def render_gdoc_report(sub):
         f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;border-radius:20px;background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
         f'<div class="score-verdict">{qa.get("overall_feedback","")}</div>'
         f'<div class="breakdown-box">{bd}</div></div>', unsafe_allow_html=True)
+
+    # Plagiarism section
+    plag_result = sub.get("plagiarism", {})
+    if plag_result:
+        st.divider()
+        pct   = plag_result.get("pct", 0)
+        flagged = plag_result.get("flagged", [])
+        srcs  = plag_result.get("sources_checked", [])
+        bar_color = "#dc2626" if pct >= 25 else "#d97706" if pct >= 10 else "#059669"
+        st.markdown("#### Plagiarism check")
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.markdown(
+                f'<div style="background:#f9fafb;border:1px solid #e8eaf0;border-radius:12px;padding:16px 18px">'
+                f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+                f'<div style="font-size:32px;font-weight:900;color:{bar_color}">{pct}%</div>'
+                f'<div><div style="font-size:13px;font-weight:700;color:#111827">Similarity with sources</div>'
+                f'<div style="font-size:11px;color:#9ca3af">Checked against {len(srcs)} sources</div></div></div>'
+                f'<div style="height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden">'
+                f'<div style="width:{min(pct,100)}%;height:100%;background:{bar_color};border-radius:4px"></div></div>'
+                f'<div style="font-size:11px;color:#6b7280;margin-top:8px">Sources: {", ".join(srcs[:8])}</div>'
+                f'</div>', unsafe_allow_html=True)
+        with c2:
+            if plag_ded > 0:
+                st.error(f"**−{plag_ded} pts** deducted\n\nRewrite flagged sections in your own words.")
+            else:
+                st.success("✅ Within acceptable range\n\nNo significant plagiarism detected.")
+        if flagged:
+            with st.expander(f"View {len(flagged)} flagged sentence{'s' if len(flagged)!=1 else ''}"):
+                for f in flagged:
+                    st.markdown(
+                        f'<div style="background:#fff8f8;border-left:3px solid #fca5a5;padding:8px 12px;'
+                        f'margin-bottom:6px;border-radius:0 8px 8px 0;font-size:12px">'
+                        f'<span style="font-size:10px;font-weight:700;color:#dc2626">SOURCE: {f["source"]} · {f["similarity"]}% match</span>'
+                        f'<br>{f["sentence"]}</div>', unsafe_allow_html=True)
 
     # Revision history
     annotated_revs = sub.get("revisions", [])
