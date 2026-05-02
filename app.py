@@ -1307,40 +1307,6 @@ def render_report(sub):
 
     st.divider()
 
-    sc1, sc2, sc3 = st.columns(3)
-
-    sc1.metric("Headings",     len(sub["headings"]))
-
-    sc2.metric("Total links",  len(sub["links"]))
-
-    sc3.metric("Internal links", len([l for l in sub["links"] if sub["platform"].lower() in l.lower()]))
-
-    if sub["comments"]:
-
-        type_colors = {"Data accuracy":        ("#fee2e2","#991b1b","−1.5 pts"),
-
-                       "Missing info":          ("#fef3c7","#92400e","−1.5 pts"),
-
-                       "Grammar / rephrasing":  ("#f0f4ff","#2D4A8A","−1 pt")}
-
-        st.markdown(f"**Editor comments — {len(sub['comments'])} found**")
-
-        for idx, c in enumerate(sub["comments"], 1):
-
-            info        = cmap.get(c["text"], {})
-
-            ctype_label = info.get("type", "Grammar / rephrasing")
-
-            bg, tc, pts = type_colors.get(ctype_label, ("#f5f6fa","#555","−1 pt"))
-
-            st.markdown(
-
-                f'<div class="cmt-card"><span class="cmt-author">Comment {idx} — {c["author"]}</span>'
-
-                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{bg};color:{tc};margin-left:8px">{ctype_label}</span>'
-
-                f'<br>{c["text"]}<div class="cmt-deduct">{pts} deducted</div></div>', unsafe_allow_html=True)
-
     col_s, col_i = st.columns(2)
 
     with col_s:
