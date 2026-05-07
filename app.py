@@ -7,7 +7,6 @@ from datetime import datetime
 from io import BytesIO
 import difflib
 import html
-from urllib.parse import urlparse
 
 try:
     from groq import Groq
@@ -79,21 +78,6 @@ COMMENT_WEIGHTS = {
 LOW_IMPACT_EDIT_TYPES = {"formatting", "rephrase", "grammar", "arabic_language"}
 HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
 REVISION_ROUND_PENALTY = 1.0  # per extra round
-
-# Known sources always checked for plagiarism
-KNOWN_SOURCES = [
-    {"name": "Bayut",            "url": "https://www.bayut.com"},
-    {"name": "Property Finder",  "url": "https://www.propertyfinder.ae"},
-    {"name": "Dubizzle",         "url": "https://www.dubizzle.com"},
-    {"name": "Emaar",            "url": "https://www.emaar.com"},
-    {"name": "Nakheel",          "url": "https://www.nakheel.com"},
-    {"name": "DAMAC",            "url": "https://www.damacproperties.com"},
-    {"name": "Aldar",            "url": "https://www.aldar.com"},
-    {"name": "Meraas",           "url": "https://www.meraas.com"},
-    {"name": "Sobha",            "url": "https://www.sobharealty.com"},
-    {"name": "Ellington",        "url": "https://www.ellingtonproperties.com"},
-    {"name": "Azizi",            "url": "https://www.azizidevelopments.com"},
-]
 
 RECORDS_FILE = "qa_records.json"
 
@@ -942,9 +926,9 @@ def capped_low_impact_deduction(items):
         "low_capped_deduction": round(low_total, 1),
     }
 
-def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds, plag_result=None):
+def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
     """
-    Score = 100 − comment deductions − smart silent-edit deductions − rounds penalty − plagiarism deduction.
+    Score = 100 − comment deductions − smart silent-edit deductions − rounds penalty.
     Silent edits use richer categories and a low-impact cap.
     """
     comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
@@ -955,11 +939,7 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
     # Rounds penalty
     rounds_penalty = max(0, (editor_rounds - 1)) * REVISION_ROUND_PENALTY
 
-    # Plagiarism deduction
-    plag_pct = plag_result.get("pct", 0) if plag_result else 0
-    plag_ded = plag_deduction(plag_pct)
-
-    total_deduction = comment_deduction + diff_deduction + rounds_penalty + plag_ded
+    total_deduction = comment_deduction + diff_deduction + rounds_penalty
     final = max(0, round(100 - total_deduction, 1))
 
     by_type = {}
@@ -981,8 +961,6 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
         "diff_by_type":       diff_by_type,
         "editor_rounds":      editor_rounds,
         "rounds_penalty":     rounds_penalty,
-        "plag_pct":           plag_pct,
-        "plag_deduction":     plag_ded,
         "final_score":        final,
     }
 
@@ -1152,187 +1130,6 @@ def get_grade(score):
         if score >= t: return label
     return GRADE_MAP[-1][1]
 
-# ── Plagiarism detection ───────────────────────────────────────────────────
-def fetch_page_text(url, timeout=8):
-    """Fetch a URL and return plain text. Returns empty string on failure."""
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            }
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status != 200:
-                return ""
-            raw = resp.read().decode("utf-8", errors="ignore")
-        raw = re.sub(r'<style[^>]*>.*?</style>', ' ', raw, flags=re.DOTALL)
-        raw = re.sub(r'<script[^>]*>.*?</script>', ' ', raw, flags=re.DOTALL)
-        raw = re.sub(r'<[^>]+>', ' ', raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
-        return raw[:40000]
-    except Exception:
-        return ""
-
-def extract_domain(url):
-    try:
-        host = urlparse(url).netloc.lower()
-        return host[4:] if host.startswith("www.") else host
-    except Exception:
-        return ""
-
-def sentence_chunks_for_plagiarism(text):
-    chunks = []
-    for s in split_sentences_smart(text):
-        words = s.split()
-        # Arabic sentences can be shorter but still meaningful.
-        if len(words) >= 9 or len(s) >= 70:
-            chunks.append(s.strip())
-    return chunks
-
-def source_similarity(sentence, source_sentence):
-    return token_similarity(sentence, source_sentence)
-
-def check_plagiarism_ai(article_text, doc_links):
-    """
-    Hybrid plagiarism/originality check:
-    1. Fetch accessible source links from the article.
-    2. Compare English/Arabic sentences using normalized token similarity.
-    3. Ask AI to flag copied/paraphrased brochure-style copy.
-
-    Note: Google AI Mode is not used here because it is not a plagiarism API.
-    For production-level plagiarism, connect a dedicated plagiarism API later.
-    """
-    BLOCKED_DOMAINS = {
-        "bayut.com", "propertyfinder.ae", "dubizzle.com", "google.com",
-        "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com"
-    }
-
-    fetched_sources = []
-    checked_urls = []
-    for link in list(dict.fromkeys(doc_links or []))[:12]:
-        if not str(link).startswith("http"):
-            continue
-        domain = extract_domain(link)
-        if not domain or any(b in domain for b in BLOCKED_DOMAINS):
-            continue
-        checked_urls.append(link)
-        text = fetch_page_text(link)
-        if text and len(text) > 250:
-            fetched_sources.append({"name": domain, "url": link, "text": text})
-
-    article_sentences = sentence_chunks_for_plagiarism(article_text)
-    flagged_from_sources = []
-    matched_idxs = set()
-
-    for src in fetched_sources:
-        src_sentences = sentence_chunks_for_plagiarism(src["text"][:60000])[:900]
-        src_norm_full = normalize_for_compare(src["text"][:60000])
-        for i, sent in enumerate(article_sentences):
-            if i in matched_idxs:
-                continue
-            sent_norm = normalize_for_compare(sent)
-            if len(sent_norm) > 60 and sent_norm in src_norm_full:
-                matched_idxs.add(i)
-                flagged_from_sources.append({
-                    "sentence": sent[:350],
-                    "source": src["name"],
-                    "similarity": 98,
-                    "method": "exact normalized match",
-                })
-                continue
-
-            best = 0.0
-            for src_sent in src_sentences:
-                sim = source_similarity(sent, src_sent)
-                if sim > best:
-                    best = sim
-                if sim >= 0.82:
-                    matched_idxs.add(i)
-                    flagged_from_sources.append({
-                        "sentence": sent[:350],
-                        "source": src["name"],
-                        "similarity": round(sim * 100),
-                        "method": "high sentence similarity",
-                    })
-                    break
-
-    source_pct = round(len(matched_idxs) / max(len(article_sentences), 1) * 100, 1)
-
-    ai_flagged = []
-    ai_pct = 0.0
-    try:
-        prompt = f"""You are an originality and plagiarism reviewer for UAE real estate content.
-
-Analyze the article below. Detect whether sentences look copied or closely paraphrased from:
-- developer brochures
-- official project pages
-- competitor portals
-- generic AI/marketing copy copied with little editing
-
-Important rules:
-- Do NOT punish common factual phrases like project name, location, developer, bedroom mix, prices, or payment plan by themselves.
-- Flag only full sentences/phrases that look copied, over-polished, brochure-like, or not originally written.
-- For Arabic content, check copied Arabic marketing wording as well as translated brochure wording.
-- Be conservative. Do not invent sources.
-
-Article excerpt:
-{article_text[:4500]}
-
-Return ONLY raw JSON:
-{{
-  "plagiarism_pct": <0-100 integer estimate>,
-  "confidence": "low|medium|high",
-  "flagged_sentences": [
-    {{"sentence": "<sentence>", "reason": "<why>", "likely_source": "<source type/name>"}}
-  ]
-}}
-Max 8 flagged sentences."""
-        raw = call_ai(prompt)
-        result = parse_json_response(raw)
-        if result:
-            ai_pct = float(result.get("plagiarism_pct", 0) or 0)
-            confidence = result.get("confidence", "medium")
-            # Keep AI-only estimates conservative when no source was fetched.
-            if not fetched_sources and confidence == "low":
-                ai_pct = min(ai_pct, 12)
-            for f in result.get("flagged_sentences", [])[:8]:
-                sentence = f.get("sentence", "")
-                if sentence:
-                    ai_flagged.append({
-                        "sentence": sentence[:350],
-                        "source": f.get("likely_source", "AI originality analysis"),
-                        "similarity": round(ai_pct),
-                        "method": f.get("reason", "AI originality signal"),
-                    })
-    except Exception:
-        pass
-
-    # Source matches are stronger evidence. AI estimate helps catch paraphrasing.
-    final_pct = max(source_pct, ai_pct)
-    all_flagged = flagged_from_sources + ai_flagged
-    sources_checked = [s["name"] for s in fetched_sources]
-    if checked_urls and not sources_checked:
-        sources_checked.append("Source URLs were checked but not readable")
-    sources_checked.append("AI originality analysis")
-
-    return {
-        "pct": round(min(final_pct, 100), 1),
-        "flagged": all_flagged[:12],
-        "sources_checked": list(dict.fromkeys(sources_checked)),
-        "method": "hybrid_source_similarity_ai",
-        "note": "Google AI Mode is not used as an automated plagiarism API; this system uses source similarity plus AI originality analysis.",
-    }
-
-def plag_deduction(pct):
-    if pct >= 50: return 10.0
-    if pct >= 25: return 6.0
-    if pct >= 10: return 3.0
-    return 0.0
-
-
 def sidebar():
     with st.sidebar:
         st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
@@ -1354,9 +1151,6 @@ def sidebar():
 | Rephrase only | −0.5 |
 | Formatting only | −0.2 |
 | Extra revision round | −1 |
-| Plagiarism 10–25% | −3 |
-| Plagiarism 25–50% | −6 |
-| Plagiarism 50%+ | −10 |
 """)
         st.markdown(
             "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
@@ -1413,7 +1207,7 @@ def page_submit():
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">Score calculated</div><div class="timeline-sub">Based on comment types.</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Get report</div><div class="timeline-sub">Confirm editor decision.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">💡 Try Google Doc mode</div>For richer scoring with revision history, use the Google Doc submission option in the sidebar.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">💡 Try Google Doc mode</div>For richer scoring with comments and silent edit detection, use the Google Doc submission option in the sidebar.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not title or not upload:
@@ -1472,7 +1266,7 @@ def page_submit():
 # ── Google Doc submit page ─────────────────────────────────────────────────
 def page_gdoc_submit():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments, revision history, and silent edits are all scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
 
     if not GOOGLE_OK:
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
@@ -1512,7 +1306,7 @@ def page_gdoc_submit():
     with side_col:
         st.markdown("""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
-  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and revision history.</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and available edit signals.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −2 · Missing −1.5/−2 · Rephrase −0.5</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Silent edits scored too</div><div class="timeline-sub">Classifies grammar vs factual/source edits automatically.</div></div></div>
 </div>
@@ -1551,12 +1345,8 @@ def page_gdoc_submit():
                 st.markdown(f'<div style="background:{color};border-radius:8px;padding:7px 11px;margin-bottom:5px;font-size:12px"><strong>{c["author"]}</strong> <span style="color:#9ca3af">{label}</span><br>{c["text"][:200]}</div>', unsafe_allow_html=True)
         else:
             st.caption("No comments found. Make sure the doc is shared with the service account and comments are open.")
-        if editor_name:
-            st.caption(f"Matching editor revisions by name: {editor_name}")
-        else:
-            st.warning("No editor name entered — revision rounds will not be calculated.")
 
-    prog.progress(20, text="Analyzing revision history…")
+    prog.progress(20, text="Analyzing editor edits…")
     editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_name)
 
     prog.progress(35, text="Exporting writer & editor versions…")
@@ -1597,12 +1387,9 @@ def page_gdoc_submit():
     prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
 
-    prog.progress(72, text="Checking plagiarism against sources…")
-    plag_result = check_plagiarism_ai(parsed["text"], parsed["links"])
-
-    prog.progress(78, text="Calculating score…")
+    prog.progress(72, text="Calculating score…")
     final_score, deductions = apply_gdoc_deductions_full(
-        classified, diff_classified, editor_rounds, plag_result
+        classified, diff_classified, editor_rounds
     )
     recommendation = get_recommendation(final_score)
 
@@ -1635,7 +1422,6 @@ def page_gdoc_submit():
         "total_revisions": total_revs,
         "writer_rev":      writer_rev,
         "editor_rev":      editor_rev,
-        "plagiarism":      plag_result,
         "qa":              qa,
         "deductions":      deductions,
         "qa_score":        final_score,
@@ -1703,15 +1489,8 @@ def render_gdoc_report(sub):
     else:
         rounds_row = brow("ok-row", f'Revision rounds ({editor_rounds} round{"s" if editor_rounds!=1 else ""}) — no extra penalty', "")
 
-    plag_pct = ded.get("plag_pct", 0)
-    plag_ded = ded.get("plag_deduction", 0)
-    if plag_ded > 0:
-        plag_row = brow("ded-row", f'Plagiarism {plag_pct}% similarity with sources', f'−{plag_ded} pts')
-    else:
-        plag_row = brow("ok-row", f'Plagiarism {plag_pct}% — within acceptable range', "")
-
     bd = (brow("base-row","Base score","100 / 100") +
-          comment_rows + diff_rows + rounds_row + plag_row +
+          comment_rows + diff_rows + rounds_row +
           brow("total-row","Final score",f"{score} / 100"))
 
     st.markdown(
@@ -1720,61 +1499,6 @@ def render_gdoc_report(sub):
         f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;border-radius:20px;background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
         f'<div class="score-verdict">{qa.get("overall_feedback","")}</div>'
         f'<div class="breakdown-box">{bd}</div></div>', unsafe_allow_html=True)
-
-    # Plagiarism section
-    plag_result = sub.get("plagiarism", {})
-    if plag_result:
-        st.divider()
-        pct   = plag_result.get("pct", 0)
-        flagged = plag_result.get("flagged", [])
-        srcs  = plag_result.get("sources_checked", [])
-        bar_color = "#dc2626" if pct >= 25 else "#d97706" if pct >= 10 else "#059669"
-        st.markdown("#### Plagiarism check")
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.markdown(
-                f'<div style="background:#f9fafb;border:1px solid #e8eaf0;border-radius:12px;padding:16px 18px">'
-                f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
-                f'<div style="font-size:32px;font-weight:900;color:{bar_color}">{pct}%</div>'
-                f'<div><div style="font-size:13px;font-weight:700;color:#111827">Similarity with sources</div>'
-                f'<div style="font-size:11px;color:#9ca3af">Checked against {len(srcs)} sources</div></div></div>'
-                f'<div style="height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden">'
-                f'<div style="width:{min(pct,100)}%;height:100%;background:{bar_color};border-radius:4px"></div></div>'
-                f'<div style="font-size:11px;color:#6b7280;margin-top:8px">Sources: {", ".join(srcs[:8])}</div>'
-                f'</div>', unsafe_allow_html=True)
-        with c2:
-            if plag_ded > 0:
-                st.error(f"**−{plag_ded} pts** deducted\n\nRewrite flagged sections in your own words.")
-            else:
-                st.success("✅ Within acceptable range\n\nNo significant plagiarism detected.")
-        if flagged:
-            with st.expander(f"View {len(flagged)} flagged sentence{'s' if len(flagged)!=1 else ''}"):
-                for f in flagged:
-                    st.markdown(
-                        f'<div style="background:#fff8f8;border-left:3px solid #fca5a5;padding:8px 12px;'
-                        f'margin-bottom:6px;border-radius:0 8px 8px 0;font-size:12px">'
-                        f'<span style="font-size:10px;font-weight:700;color:#dc2626">SOURCE: {f["source"]} · {f["similarity"]}% match</span>'
-                        f'<br>{f["sentence"]}</div>', unsafe_allow_html=True)
-
-    # Revision history
-    annotated_revs = sub.get("revisions", [])
-    if annotated_revs:
-        st.divider()
-        # Collect unique emails to show hint
-        all_emails = list(dict.fromkeys(
-            r.get("email","") for r in annotated_revs if r.get("email")
-        ))
-        st.markdown(f"#### Revision history — {sub.get('total_revisions',0)} total · {editor_rounds} editor round{'s' if editor_rounds!=1 else ''}")
-        if editor_rounds == 0 and all_emails:
-            st.warning(
-                f"⚠️ 0 editor rounds detected. Google API returned these emails in the revisions: "
-                f"`{'` · `'.join(all_emails)}` — copy the editor's exact email into the **Editor emails** field and resubmit."
-            )
-        for r in annotated_revs[-10:]:
-            who_badge = f'<span class="rev-badge rev-{"editor" if r["who"]=="editor" else "writer"}">{"✏️ Editor" if r["who"]=="editor" else "📝 Writer"}</span>'
-            t = r.get("time","")[:10]
-            email_shown = r.get("email","unknown")
-            st.markdown(f'<div class="rev-card"><div class="rev-round">{who_badge} <span style="font-size:12px;color:#64748b">{email_shown} · {t}</span></div></div>', unsafe_allow_html=True)
 
     # Silent editor edits (diff)
     diff_classified = sub.get("diff_classified", [])
