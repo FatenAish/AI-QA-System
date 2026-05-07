@@ -61,23 +61,23 @@ GRADE_MAP = [
 # Silent edits are intentionally more detailed than comments so the system can
 # separate harmless wording cleanup from factual corrections and source fixes.
 COMMENT_WEIGHTS = {
-    "factual":            {"label": "Factual correction",        "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "wrong_info_removed": {"label": "Wrong info removed",        "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "source_alignment":   {"label": "Source alignment",          "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "contradiction_fixed": {"label": "Contradiction fixed",      "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "missing":            {"label": "Missing critical info",     "deduction": 2.0, "color": "#fef3c7", "tc": "#92400e"},
-    "missing_info_added": {"label": "Missing info added",        "deduction": 1.5, "color": "#fef3c7", "tc": "#92400e"},
-    "structural":         {"label": "Structural rewrite",        "deduction": 1.5, "color": "#fde8d8", "tc": "#9a3412"},
-    "brand_voice":        {"label": "Brand voice / tone",        "deduction": 1.2, "color": "#ede9fe", "tc": "#5b21b6"},
-    "arabic_language":    {"label": "Arabic language correction", "deduction": 0.8, "color": "#e0f2fe", "tc": "#075985"},
-    "grammar":            {"label": "Grammar / phrasing",        "deduction": 0.7, "color": "#f0f4ff", "tc": "#2D4A8A"},
-    "rephrase":           {"label": "Rephrase only",             "deduction": 0.5, "color": "#f1f5f9", "tc": "#475569"},
-    "formatting":         {"label": "Formatting / punctuation",  "deduction": 0.2, "color": "#f8fafc", "tc": "#64748b"},
+    "factual":            {"label": "Factual correction",        "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "wrong_info_removed": {"label": "Wrong info removed",        "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "source_alignment":   {"label": "Source alignment",          "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "contradiction_fixed": {"label": "Contradiction fixed",      "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "missing":            {"label": "Missing critical info",     "deduction": 1.5, "color": "#fef3c7", "tc": "#92400e"},
+    "missing_info_added": {"label": "Missing info added",        "deduction": 1.2, "color": "#fef3c7", "tc": "#92400e"},
+    "structural":         {"label": "Structural rewrite",        "deduction": 1.2, "color": "#fde8d8", "tc": "#9a3412"},
+    "brand_voice":        {"label": "Brand voice / tone",        "deduction": 1.0, "color": "#ede9fe", "tc": "#5b21b6"},
+    "arabic_language":    {"label": "Arabic language correction", "deduction": 0.6, "color": "#e0f2fe", "tc": "#075985"},
+    "grammar":            {"label": "Grammar / phrasing",        "deduction": 0.5, "color": "#f0f4ff", "tc": "#2D4A8A"},
+    "rephrase":           {"label": "Rephrase only",             "deduction": 0.3, "color": "#f1f5f9", "tc": "#475569"},
+    "formatting":         {"label": "Formatting / punctuation",  "deduction": 0.1, "color": "#f8fafc", "tc": "#64748b"},
 }
 
 LOW_IMPACT_EDIT_TYPES = {"formatting", "rephrase", "grammar", "arabic_language"}
 HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
-REVISION_ROUND_PENALTY = 1.0  # per extra round
+REVISION_ROUND_PENALTY = 0.7  # per extra round
 
 RECORDS_FILE = "qa_records.json"
 
@@ -1099,12 +1099,12 @@ def classify_comment(text):
     for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's",
                "the source","in the source","copied","from google","from maps","url goes","link goes",
                "apartments","no apartments","mins away","minutes away","under construction","off-plan","data","fact"]:
-        if kw in low: return "Data accuracy", 1.5
+        if kw in low: return "Data accuracy", 1.2
     for kw in ["missing","add","please add","include","mention","not mentioned","should mention",
                "we need","please mention","go through","available","please write","notable projects",
                "specific","more details","lacks","header","section"]:
-        if kw in low: return "Missing info", 1.5
-    return "Grammar / rephrasing", 1.0
+        if kw in low: return "Missing info", 1.2
+    return "Grammar / rephrasing", 0.8
 
 def apply_deductions(comments):
     classified        = []
@@ -1142,15 +1142,15 @@ def sidebar():
         st.markdown("""
 | Rule | Pts |
 |---|---:|
-| Factual/source correction | −2 |
-| Wrong info removed | −2 |
-| Missing info added | −1.5 to −2 |
-| Structural rewrite | −1.5 |
-| Brand voice / tone | −1.2 |
-| Arabic/grammar fix | −0.7 to −0.8 |
-| Rephrase only | −0.5 |
-| Formatting only | −0.2 |
-| Extra revision round | −1 |
+| Factual/source correction | −1.5 |
+| Wrong info removed | −1.5 |
+| Missing info added | −1.2 to −1.5 |
+| Structural rewrite | −1.2 |
+| Brand voice / tone | −1 |
+| Arabic/grammar fix | −0.5 to −0.6 |
+| Rephrase only | −0.3 |
+| Formatting only | −0.1 |
+| Extra revision round | −0.7 |
 """)
         st.markdown(
             "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
