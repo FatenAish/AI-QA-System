@@ -430,6 +430,92 @@ def compute_diff(writer_text, editor_text):
 
     return changes
 
+
+def _tokenize_for_micro_diff(text):
+    """Tokenize Arabic/English text for micro silent-edit detection."""
+    text = str(text or "")
+    # Keep words/numbers as tokens and keep punctuation only as separators.
+    # Arabic range + English letters + numbers. This intentionally ignores punctuation-only edits.
+    return re.findall(r"[\u0600-\u06FFA-Za-z0-9]+(?:[-_/][\u0600-\u06FFA-Za-z0-9]+)*", text)
+
+
+def _micro_context(tokens, start, end, window=5):
+    """Small readable context around a token-level edit."""
+    left = max(0, start - window)
+    right = min(len(tokens), end + window)
+    return " ".join(tokens[left:right]).strip()
+
+
+def _explode_change_to_micro_edits(change, lang):
+    """
+    Break one large replace block into multiple token-level silent edits.
+    This is important for Arabic because Google Docs often groups many small Arabic
+    changes inside one paragraph as one replacement block.
+    """
+    original = change.get("original", "") or ""
+    revised = change.get("revised", "") or ""
+    tag = change.get("tag", "")
+
+    has_arabic = re.search(r"[\u0600-\u06FF]", original + revised) is not None
+    if tag != "replace" or (lang != "Arabic" and not has_arabic):
+        return [change]
+
+    old_tokens = _tokenize_for_micro_diff(original)
+    new_tokens = _tokenize_for_micro_diff(revised)
+    if not old_tokens or not new_tokens:
+        return [change]
+
+    # Do not explode tiny edits; keep them as one meaningful change.
+    non_equal_estimate = abs(len(old_tokens) - len(new_tokens))
+    if max(len(old_tokens), len(new_tokens)) < 10 and non_equal_estimate < 3:
+        return [change]
+
+    old_norm = [normalize_for_compare(t) for t in old_tokens]
+    new_norm = [normalize_for_compare(t) for t in new_tokens]
+    sm = difflib.SequenceMatcher(None, old_norm, new_norm, autojunk=False)
+
+    edits = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+
+        old_part = " ".join(old_tokens[i1:i2]).strip()
+        new_part = " ".join(new_tokens[j1:j2]).strip()
+        if not old_part and not new_part:
+            continue
+        if looks_like_formatting_only(old_part, new_part):
+            continue
+
+        # Ignore extremely tiny punctuation/spacing artifacts after normalization.
+        if len(normalize_for_compare(old_part + new_part)) < 2:
+            continue
+
+        old_ctx = _micro_context(old_tokens, i1, i2)
+        new_ctx = _micro_context(new_tokens, j1, j2)
+        micro = {
+            **{k: v for k, v in change.items() if k not in {"original", "revised", "similarity", "word_delta", "tag"}},
+            "tag": op,
+            "original": old_part[:700],
+            "revised": new_part[:700],
+            "original_context": old_ctx[:700],
+            "revised_context": new_ctx[:700],
+            "similarity": round(token_similarity(old_part, new_part), 3),
+            "word_delta": len(new_part.split()) - len(old_part.split()),
+            "micro_edit": True,
+        }
+        edits.append(micro)
+
+    # If token-level diff produced enough detail, use it. Otherwise keep the original block.
+    return edits if len(edits) >= 2 else [change]
+
+
+def explode_changes_to_micro_edits(changes, lang):
+    """Apply micro-edit splitting to a list of diff changes."""
+    exploded = []
+    for ch in changes or []:
+        exploded.extend(_explode_change_to_micro_edits(ch, lang))
+    return exploded
+
 def classify_diff_changes(changes, platform, lang):
     """
     Classify silent edits by editorial reason, not just by size.
@@ -440,8 +526,9 @@ def classify_diff_changes(changes, platform, lang):
 
     allowed = list(COMMENT_WEIGHTS.keys())
     items = "\n".join(
-        f"[{i+1}] TAG: {c.get('tag','')} | SIMILARITY: {c.get('similarity','')} | WORD_DELTA: {c.get('word_delta','')}\n"
-        f"ORIGINAL: {c.get('original','')[:500]}\nREVISED: {c.get('revised','')[:500]}"
+        f"[{i+1}] TAG: {c.get('tag','')} | SIMILARITY: {c.get('similarity','')} | WORD_DELTA: {c.get('word_delta','')} | MICRO: {c.get('micro_edit', False)}\n"
+        f"ORIGINAL: {c.get('original','')[:500]}\nREVISED: {c.get('revised','')[:500]}\n"
+        f"ORIGINAL_CONTEXT: {c.get('original_context','')[:500]}\nREVISED_CONTEXT: {c.get('revised_context','')[:500]}"
         for i, c in enumerate(changes[:80])
     )
 
@@ -726,6 +813,7 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
 
     if lang == "Arabic":
         all_changes = _split_arabic_large_changes(all_changes)
+        all_changes = explode_changes_to_micro_edits(all_changes, lang)
 
     all_changes = _dedupe_diff_changes(all_changes)
 
@@ -736,6 +824,7 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         fallback = compute_diff(first_text, last_text)
         if lang == "Arabic":
             fallback = _split_arabic_large_changes(fallback)
+            fallback = explode_changes_to_micro_edits(fallback, lang)
         all_changes = _dedupe_diff_changes(fallback)
         return all_changes, first_rev, last_rev
 
@@ -876,11 +965,20 @@ def fetch_google_doc(url):
     # ── Revision history ───────────────────────────────────────────────────
     revisions = []
     try:
-        resp = drive_svc.revisions().list(
-            fileId=doc_id,
-            fields="revisions(id,modifiedTime,lastModifyingUser,exportLinks)"
-        ).execute()
-        revisions = resp.get("revisions", [])
+        page_token = None
+        while True:
+            params = dict(
+                fileId=doc_id,
+                fields="nextPageToken,revisions(id,modifiedTime,lastModifyingUser,exportLinks)",
+                pageSize=200,
+            )
+            if page_token:
+                params["pageToken"] = page_token
+            resp = drive_svc.revisions().list(**params).execute()
+            revisions.extend(resp.get("revisions", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
     except Exception:
         pass
 
@@ -893,6 +991,7 @@ def fetch_google_doc(url):
         "comments_error":  comments_error,
         "suggestions":     suggestions,
         "revisions":       revisions,
+        "revision_count_from_api": len(revisions),
         "word_count":      len(text.split()),
         "drive_svc":       drive_svc,
         "svc_creds":       svc_creds,
@@ -1512,6 +1611,8 @@ def page_gdoc_submit():
         diff_changes = compute_diff(writer_text, editor_text)
         if lang == "Arabic":
             diff_changes = _split_arabic_large_changes(diff_changes)
+            diff_changes = explode_changes_to_micro_edits(diff_changes, lang)
+            diff_changes = _dedupe_diff_changes(diff_changes)
         prog.progress(60, text="Classifying editor edits with AI…")
         diff_classified = classify_diff_changes(diff_changes, platform, lang)
         diff_source = "revision_diff"
