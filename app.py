@@ -902,6 +902,71 @@ def fetch_drive_activity_edit_events(creds, doc_id, editor_name=""):
     return clean
 
 
+
+
+def parse_pasted_google_docs_version_history(raw_text, editor_name=""):
+    """
+    Parse a manual paste from Google Docs Version history sidebar.
+
+    Why this exists:
+    Google Docs UI can show many version-history rows that are NOT exposed by
+    Drive revisions().list() or Drive Activity API. When the user pastes the
+    visible version-history list, this parser counts every visible save row for
+    the selected editor. These rows are event-only activity, not extra text
+    deductions.
+    """
+    if not raw_text or not str(raw_text).strip():
+        return []
+
+    import re
+
+    editor_name_lower = (editor_name or "").strip().lower()
+    raw_lines = [ln.strip() for ln in str(raw_text).replace("\u202f", " ").replace("\xa0", " ").splitlines()]
+    lines = [ln for ln in raw_lines if ln]
+
+    # Examples accepted:
+    # May 7, 3:40 PM
+    # May 7, 3:40PM
+    # Thursday
+    # Current version
+    date_re = re.compile(
+        r"^(?:[A-Za-z]+,?\s+)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)$"
+    )
+
+    skip_labels = {
+        "current version", "version history", "all versions", "thursday", "friday",
+        "saturday", "sunday", "monday", "tuesday", "wednesday", "today", "yesterday"
+    }
+
+    events = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if date_re.match(line):
+            revision_time = line
+            j = i + 1
+            # Skip UI labels between timestamp and author.
+            while j < len(lines) and lines[j].strip().lower() in skip_labels:
+                j += 1
+            if j < len(lines):
+                user = lines[j].strip()
+                ul = user.lower()
+                # Avoid accidentally treating another timestamp as user.
+                if not date_re.match(user) and user.lower() not in skip_labels:
+                    if not editor_name_lower or editor_name_lower in ul or ul in editor_name_lower:
+                        events.append({
+                            "revision_id": f"manual:{len(events)+1}:{revision_time}:{user}",
+                            "revision_time": revision_time,
+                            "revision_user": user,
+                            "revision_index": len(events)+1,
+                            "activity_source": "manual_google_docs_version_history_paste",
+                        })
+                    i = j + 1
+                    continue
+        i += 1
+
+    return events
+
 def add_revision_event_visibility(diff_changes, revision_events):
     """
     Keep textual diff changes, but also add zero-penalty event-only rows for revision
@@ -1712,6 +1777,15 @@ def page_gdoc_submit():
                                         label_visibility="collapsed")
                 st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
+                st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Optional: paste Google Docs version-history list</div>', unsafe_allow_html=True)
+                manual_revision_history = st.text_area(
+                    "Paste version history",
+                    placeholder="Paste the visible Google Docs Version history list here when Google API returns fewer revision saves than the UI.",
+                    height=120,
+                    label_visibility="collapsed"
+                )
+                st.caption("Use this when Google Docs shows many saves, but the API returns only a few. These pasted rows are counted as revision-save activity only; they do not add text deductions.")
+
                 st.markdown(f"""
 <div class="precheck">
   <div class="precheck-item {'done' if writer.strip() else ''}"><span class="precheck-dot">✓</span><span>Writer name</span></div>
@@ -1789,6 +1863,11 @@ def page_gdoc_submit():
         # instead of showing 0 activity.
         revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), "")
         revision_activity_source = "drive_revisions_api_all_users_fallback"
+
+    manual_revision_events = parse_pasted_google_docs_version_history(manual_revision_history, editor_name)
+    if manual_revision_events and len(manual_revision_events) > len(revision_activity_events):
+        revision_activity_events = manual_revision_events
+        revision_activity_source = "manual_google_docs_version_history_paste"
 
     # Primary: compare every consecutive revision, not only first vs final.
     # This catches several Arabic silent edits that Google Docs may group into one final diff block.
@@ -1968,8 +2047,8 @@ def render_gdoc_report(sub):
         st.markdown(f"#### Silent editor activity — {activity_count or event_count} revision saves · {text_change_count} text changes found")
         st.caption(
             f"Activity source: {activity_source}. "
-            "The system now shows every revision-history save returned by Google for the selected editor, "
-            "even when Google export does not expose a separate before/after text diff. "
+            "If source is manual paste, the count comes from the visible Google Docs Version history list pasted into the form. "
+            "If source is Google API, it only shows saves exposed by Google APIs, which can be fewer than the UI. "
             f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
             f"Medium: {diff_summary.get('medium_count', 0)} · "
             f"Low-impact: {diff_summary.get('low_count', 0)} · "
