@@ -310,6 +310,7 @@ def get_google_services():
         scopes=[
             "https://www.googleapis.com/auth/documents.readonly",
             "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive.activity.readonly",
         ]
     )
     docs  = build("docs",  "v1", credentials=creds)
@@ -812,6 +813,93 @@ def get_revision_activity_events(revisions, editor_name=""):
             "revision_index": idx,
         })
     return events
+
+
+
+def _activity_sort_key_global(item):
+    return item.get("revision_time", "") or item.get("revision_id", "") or ""
+
+
+def fetch_drive_activity_edit_events(creds, doc_id, editor_name=""):
+    """
+    Fallback/upgrade for Google Docs version-history counting.
+
+    Drive `revisions().list()` often does NOT expose every visible Google Docs
+    version-history save. The Drive Activity API can expose edit activity events
+    that are closer to the rows users see in the Google Docs Version history UI.
+
+    Notes:
+    - This needs the scope: https://www.googleapis.com/auth/drive.activity.readonly
+    - The Drive Activity API may not always return a human display name for each
+      actor, so when names are not exposed we count all edit activity for the doc
+      rather than returning 0.
+    - These are visibility/count events only; they should not create deductions
+      unless a real text diff is also available.
+    """
+    events = []
+    try:
+        activity = build("driveactivity", "v2", credentials=creds)
+        page_token = None
+        editor_name_lower = (editor_name or "").strip().lower()
+        while True:
+            body = {
+                "itemName": f"items/{doc_id}",
+                "pageSize": 100,
+                "filter": "detail.action_detail_case:EDIT",
+            }
+            if page_token:
+                body["pageToken"] = page_token
+            resp = activity.activity().query(body=body).execute()
+            for idx, act in enumerate(resp.get("activities", []), 1):
+                detail = act.get("primaryActionDetail", {}) or {}
+                if "edit" not in detail:
+                    continue
+                actor_names = []
+                for actor in act.get("actors", []) or []:
+                    user = actor.get("user", {}) or {}
+                    known = user.get("knownUser", {}) or {}
+                    name = (known.get("personName") or known.get("displayName") or "").strip()
+                    if name:
+                        actor_names.append(name)
+                    elif user.get("unknownUser") is not None:
+                        actor_names.append("Unknown user")
+                    elif user.get("deletedUser") is not None:
+                        actor_names.append("Deleted user")
+                actor_label = ", ".join(actor_names) if actor_names else "Drive Activity editor"
+
+                # Only filter by editor name when Drive Activity actually exposes
+                # comparable actor names. Otherwise do not throw the event away.
+                comparable = actor_label and actor_label != "Drive Activity editor"
+                if editor_name_lower and comparable:
+                    al = actor_label.lower()
+                    if not (editor_name_lower in al or al in editor_name_lower):
+                        continue
+
+                when = act.get("timestamp") or (act.get("timeRange", {}) or {}).get("endTime") or (act.get("timeRange", {}) or {}).get("startTime") or ""
+                events.append({
+                    "revision_id": f"activity:{when}:{len(events)+1}",
+                    "revision_time": when,
+                    "revision_user": actor_label,
+                    "revision_index": len(events)+1,
+                    "activity_source": "drive_activity_api",
+                })
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception:
+        return []
+
+    # Preserve order and avoid exact duplicate activity ids/times.
+    seen = set()
+    clean = []
+    for ev in sorted(events, key=_activity_sort_key_global):
+        key = (ev.get("revision_id"), ev.get("revision_time"), ev.get("revision_user"))
+        if key in seen:
+            continue
+        seen.add(key)
+        ev["revision_index"] = len(clean) + 1
+        clean.append(ev)
+    return clean
 
 
 def add_revision_event_visibility(diff_changes, revision_events):
@@ -1689,6 +1777,18 @@ def page_gdoc_submit():
     diff_classified = []
     diff_source     = None
     revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), editor_name)
+    drive_activity_events = fetch_drive_activity_edit_events(parsed.get("svc_creds"), extract_doc_id(doc_url), editor_name)
+    revision_activity_source = "drive_revisions_api"
+    # Use the richer count source. Drive Activity often reflects Google Docs UI
+    # version-history activity better than Drive revisions().list().
+    if len(drive_activity_events) > len(revision_activity_events):
+        revision_activity_events = drive_activity_events
+        revision_activity_source = "drive_activity_api"
+    elif not revision_activity_events and parsed.get("revisions"):
+        # If editor-name matching failed, still show all Drive revision rows
+        # instead of showing 0 activity.
+        revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), "")
+        revision_activity_source = "drive_revisions_api_all_users_fallback"
 
     # Primary: compare every consecutive revision, not only first vs final.
     # This catches several Arabic silent edits that Google Docs may group into one final diff block.
@@ -1770,6 +1870,7 @@ def page_gdoc_submit():
         "diff_classified": diff_classified,
         "diff_source":     diff_source,
         "revision_activity_count": len(revision_activity_events),
+        "revision_activity_source": revision_activity_source,
         "revision_activity_events": revision_activity_events,
         "suggestions_raw": parsed.get("suggestions", []),
         "revisions":       annotated_revs,
@@ -1863,8 +1964,10 @@ def render_gdoc_report(sub):
         event_count = diff_summary.get("event_count", 0)
         text_change_count = len([d for d in diff_classified if d.get("type") != "revision_event"])
         activity_count = sub.get("revision_activity_count", 0)
+        activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         st.markdown(f"#### Silent editor activity — {activity_count or event_count} revision saves · {text_change_count} text changes found")
         st.caption(
+            f"Activity source: {activity_source}. "
             "The system now shows every revision-history save returned by Google for the selected editor, "
             "even when Google export does not expose a separate before/after text diff. "
             f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
