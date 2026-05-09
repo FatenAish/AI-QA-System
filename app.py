@@ -396,6 +396,55 @@ def token_similarity(a, b):
 def looks_like_formatting_only(original, revised):
     return normalize_for_compare(original) == normalize_for_compare(revised)
 
+def _comment_artifact_terms():
+    """Terms that usually appear only inside exported Google Docs comments/notes."""
+    return [
+        "الأفضل", "الافضل", "فالافضل", "فالأفضل", "عدلت", "تعديل", "ترجمتها", "ترجمت", "تُرجمت",
+        "بتبلش", "بتبدأ", "ما الها داعي", "ما إلها داعي", "ملاحظة", "مكررة", "هون", "بالله",
+        "نعدلها", "الأدق", "ادقق", "comment", "note", "dining counters", "pre handover", "lap pool"
+    ]
+
+
+def _truncate_exported_comment_tail(raw_line):
+    """
+    Google Docs export can append inline comment text to the article line, sometimes
+    after removing [a]/[b] markers. Keep the article content before the first clear
+    comment phrase and drop the comment tail.
+    """
+    line = str(raw_line or "")
+    lowered = line.lower()
+
+    # Patterns where a removed marker leaves a connector word before the comment text,
+    # e.g. "* دبي مارينا ووك جزء dining counters...".
+    marker_tail_patterns = [
+        r"\s+جزء\s+(?=dining counters|pre handover|lap pool|معظم|ما الها|ما إلها|تُ?رجمت|ترجمت|عدلت|كلمة|لما يكون|هون|الأفضل|الافضل)",
+        r"\s+هون\s+(?=pre handover|dining counters|lap pool)",
+    ]
+    for pat in marker_tail_patterns:
+        m = re.search(pat, line, flags=re.IGNORECASE)
+        if m:
+            return line[:m.start()].rstrip()
+
+    # Direct comment trigger terms.
+    first_pos = None
+    for term in _comment_artifact_terms():
+        pos = lowered.find(term.lower())
+        if pos >= 0:
+            if first_pos is None or pos < first_pos:
+                first_pos = pos
+
+    if first_pos is not None:
+        # Keep only meaningful article text before the comment text.
+        kept = line[:first_pos].rstrip(" -–—:؛،,.\t")
+        # Remove orphan connector words that often remain after marker removal.
+        kept = re.sub(r"\s+(جزء|هون|أما|اما)$", "", kept).rstrip()
+        if kept and len(kept.split()) >= 2:
+            return kept
+        return ""
+
+    return line
+
+
 def clean_google_doc_export_artifacts(value):
     """
     Remove Google Docs exported comment/reference artifacts before diffing.
@@ -406,10 +455,7 @@ def clean_google_doc_export_artifacts(value):
     text = text.replace("\ufeff", "")
 
     cleaned_lines = []
-    comment_words = [
-        "الأفضل", "الافضل", "عدلت", "تعديل", "ترجمتها", "ترجمتها", "بتبلش",
-        "ما الها داعي", "كون", "هان", "ملاحظة", "comment", "note"
-    ]
+    comment_words = _comment_artifact_terms()
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -420,12 +466,13 @@ def clean_google_doc_export_artifacts(value):
         markers = re.findall(r"\[[a-zA-Z]{1,3}\]", line)
         lower_line = line.lower()
 
-        # Full exported comment/note line, not article content.
-        if markers and any(w in lower_line for w in comment_words) and len(markers) >= 1:
+        # Full exported comment/note line, not article content. Keep only article
+        # text before the first marker, then run tail truncation on that piece too.
+        if markers and any(w.lower() in lower_line for w in comment_words):
             first_marker = re.search(r"\[[a-zA-Z]{1,3}\]", raw_line)
             if first_marker:
-                # Keep article text before the first marker only, if any.
                 kept = raw_line[:first_marker.start()].rstrip()
+                kept = _truncate_exported_comment_tail(kept)
                 if kept and len(kept.split()) >= 2:
                     cleaned_lines.append(kept)
                 continue
@@ -435,13 +482,17 @@ def clean_google_doc_export_artifacts(value):
             first_marker = re.search(r"\[[a-zA-Z]{1,3}\]", raw_line)
             if first_marker:
                 kept = raw_line[:first_marker.start()].rstrip()
+                kept = _truncate_exported_comment_tail(kept)
                 if kept and len(kept.split()) >= 2:
                     cleaned_lines.append(kept)
                 continue
 
-        # Normal article line: remove reference markers only.
+        # Normal article line: remove reference markers only, then remove any
+        # trailing comment text that survived without markers.
         raw_line = re.sub(r"\[[a-zA-Z]{1,3}\]", "", raw_line)
-        cleaned_lines.append(raw_line)
+        raw_line = _truncate_exported_comment_tail(raw_line)
+        if raw_line.strip():
+            cleaned_lines.append(raw_line)
 
     text = "\n".join(cleaned_lines)
     text = re.sub(r"\[[a-zA-Z]{1,3}\]", "", text)
@@ -472,6 +523,9 @@ def compute_diff(writer_text, editor_text):
         original = " ".join(w_sents[i1:i2]).strip()
         revised = " ".join(e_sents[j1:j2]).strip()
         if not original and not revised:
+            continue
+        if _looks_like_comment_artifact(original, revised):
+            # Exported Google Docs comment text must never be counted as a silent edit.
             continue
         if looks_like_formatting_only(original, revised):
             # Formatting-only/tashkeel-only changes are kept only if meaningful enough.
@@ -697,9 +751,23 @@ def _number_sets_differ(a, b):
 
 def _looks_like_comment_artifact(original, revised):
     both = f"{original} {revised}"
+    lower = both.lower()
     markers = re.findall(r"\[[a-zA-Z]{1,3}\]", both)
-    comment_words = ["الأفضل", "الافضل", "عدلت", "ترجمتها", "بتبلش", "ما الها داعي", "ملاحظة", "comment", "note"]
-    return bool(markers) and any(w in both.lower() for w in comment_words)
+    terms = _comment_artifact_terms()
+
+    # Marker + comment term is definitely exported comment material.
+    if markers and any(w.lower() in lower for w in terms):
+        return True
+
+    # Even without markers, exported notes often survive as English/Arabic editor talk.
+    strong_phrases = [
+        "dining counters", "pre handover", "lap pool", "بتبلش", "ما الها داعي", "ما إلها داعي",
+        "نعدلها", "مكررة", "هون pre", "ترجمتها", "تُرجمت", "عدلت الترجمة", "كلمة استوديو"
+    ]
+    if any(p.lower() in lower for p in strong_phrases):
+        return True
+
+    return False
 
 def fallback_diff_type(ch, lang):
     original = ch.get("original", "") or ""
