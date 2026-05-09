@@ -608,6 +608,140 @@ def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_name, rev
     return w, e, writer_rev, editor_rev
 
 
+
+def _revision_user_matches_editor(revision, editor_name):
+    """Return True when the Google revision user looks like the selected editor."""
+    editor_name_lower = (editor_name or "").strip().lower()
+    if not editor_name_lower:
+        return True
+    user = revision.get("lastModifyingUser", {}) or {}
+    display = (user.get("displayName") or "").strip().lower()
+    email = (user.get("emailAddress") or "").strip().lower()
+    candidates = [display, email]
+    return any(c and (editor_name_lower in c or c in editor_name_lower) for c in candidates)
+
+
+def _dedupe_diff_changes(changes):
+    """Remove duplicate autosave / repeated revision changes."""
+    unique = []
+    seen = set()
+    for ch in changes or []:
+        key = (
+            ch.get("tag", ""),
+            normalize_for_compare(ch.get("original", ""))[:250],
+            normalize_for_compare(ch.get("revised", ""))[:250],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ch)
+    return unique
+
+
+def _split_arabic_large_changes(changes):
+    """
+    Arabic paragraphs can be returned as one large replace block.
+    This breaks big Arabic rewrite blocks into smaller phrase-level units when possible.
+    """
+    refined = []
+    for ch in changes or []:
+        original = ch.get("original", "") or ""
+        revised = ch.get("revised", "") or ""
+        has_arabic = re.search(r"[\u0600-\u06FF]", original + revised) is not None
+        if ch.get("tag") != "replace" or not has_arabic:
+            refined.append(ch)
+            continue
+        # Only split clearly large blocks. Small changes stay as-is.
+        if max(len(original.split()), len(revised.split())) < 22:
+            refined.append(ch)
+            continue
+        o_parts = [x.strip() for x in re.split(r"[،؛.؟!\n]+", original) if len(x.strip().split()) >= 3]
+        r_parts = [x.strip() for x in re.split(r"[،؛.؟!\n]+", revised) if len(x.strip().split()) >= 3]
+        if len(o_parts) <= 1 or len(r_parts) <= 1:
+            refined.append(ch)
+            continue
+        sm = difflib.SequenceMatcher(
+            None,
+            [normalize_for_compare(x) for x in o_parts],
+            [normalize_for_compare(x) for x in r_parts],
+            autojunk=False,
+        )
+        local = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                continue
+            o = "، ".join(o_parts[i1:i2]).strip()
+            r = "، ".join(r_parts[j1:j2]).strip()
+            if not o and not r:
+                continue
+            if looks_like_formatting_only(o, r):
+                continue
+            local.append({
+                "tag": tag,
+                "original": o[:700],
+                "revised": r[:700],
+                "similarity": round(token_similarity(o, r), 3),
+                "word_delta": len(r.split()) - len(o.split()),
+            })
+        refined.extend(local if local else [ch])
+    return refined
+
+
+def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, revisions, lang):
+    """
+    Compare consecutive Google Doc revisions instead of only first vs final.
+    This catches multiple Arabic silent edits that Google saves as separate revision snapshots.
+    """
+    if not revisions or len(revisions) < 2:
+        return [], None, None
+
+    exported = []
+    for rev in revisions:
+        txt = export_revision_text(drive_svc, creds, doc_id, rev.get("id"))
+        if txt and txt.strip():
+            exported.append((rev, txt))
+
+    if len(exported) < 2:
+        return [], None, None
+
+    all_changes = []
+    for idx in range(1, len(exported)):
+        prev_rev, prev_text = exported[idx - 1]
+        cur_rev, cur_text = exported[idx]
+
+        # Count only revisions made by the selected editor when possible.
+        if editor_name and not _revision_user_matches_editor(cur_rev, editor_name):
+            continue
+
+        if normalize_for_compare(prev_text) == normalize_for_compare(cur_text):
+            continue
+
+        changes = compute_diff(prev_text, cur_text)
+        for ch in changes:
+            ch["revision_from"] = prev_rev.get("id")
+            ch["revision_to"] = cur_rev.get("id")
+            ch["revision_time"] = cur_rev.get("modifiedTime", "")
+            ch["revision_user"] = (cur_rev.get("lastModifyingUser", {}) or {}).get("displayName", "")
+        all_changes.extend(changes)
+
+    if lang == "Arabic":
+        all_changes = _split_arabic_large_changes(all_changes)
+
+    all_changes = _dedupe_diff_changes(all_changes)
+
+    # If editor filtering found nothing, fall back to first vs final so the system still works.
+    if not all_changes:
+        first_rev, first_text = exported[0]
+        last_rev, last_text = exported[-1]
+        fallback = compute_diff(first_text, last_text)
+        if lang == "Arabic":
+            fallback = _split_arabic_large_changes(fallback)
+        all_changes = _dedupe_diff_changes(fallback)
+        return all_changes, first_rev, last_rev
+
+    return all_changes, exported[0][0], exported[-1][0]
+
+
 def extract_text_from_gdoc(doc):
     text, headings = [], []
     heading_map = {"HEADING_1": "H1", "HEADING_2": "H2", "HEADING_3": "H3"}
@@ -1349,7 +1483,7 @@ def page_gdoc_submit():
     prog.progress(20, text="Analyzing editor edits…")
     editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_name)
 
-    prog.progress(35, text="Exporting writer & editor versions…")
+    prog.progress(35, text="Exporting and comparing Google Doc revisions…")
     writer_text, editor_text, writer_rev, editor_rev = fetch_writer_and_editor_revisions(
         parsed["drive_svc"], parsed["svc_creds"],
         extract_doc_id(doc_url), editor_name, parsed["revisions"]
@@ -1359,10 +1493,25 @@ def page_gdoc_submit():
     diff_classified = []
     diff_source     = None
 
-    if writer_text and editor_text:
-        # Primary: revision export diff
+    # Primary: compare every consecutive revision, not only first vs final.
+    # This catches several Arabic silent edits that Google Docs may group into one final diff block.
+    if parsed.get("revisions"):
+        prog.progress(50, text="Computing consecutive revision diffs…")
+        diff_changes, first_diff_rev, last_diff_rev = compute_consecutive_revision_diffs(
+            parsed["drive_svc"], parsed["svc_creds"],
+            extract_doc_id(doc_url), editor_name, parsed["revisions"], lang
+        )
+        if diff_changes:
+            prog.progress(60, text="Classifying editor edits with AI…")
+            diff_classified = classify_diff_changes(diff_changes, platform, lang)
+            diff_source = "consecutive_revision_diff"
+
+    if not diff_classified and writer_text and editor_text:
+        # Fallback: writer vs final version
         prog.progress(50, text="Computing diff between writer and editor versions…")
         diff_changes = compute_diff(writer_text, editor_text)
+        if lang == "Arabic":
+            diff_changes = _split_arabic_large_changes(diff_changes)
         prog.progress(60, text="Classifying editor edits with AI…")
         diff_classified = classify_diff_changes(diff_changes, platform, lang)
         diff_source = "revision_diff"
