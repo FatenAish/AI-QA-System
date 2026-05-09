@@ -2097,9 +2097,9 @@ def page_gdoc_submit():
     with side_col:
         st.markdown("""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
-  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and available edit signals.</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −2 · Missing −1.5/−2 · Rephrase −0.5</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Silent edits scored too</div><div class="timeline-sub">Classifies grammar vs factual/source edits automatically.</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
 </div>
 <div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
 
@@ -2140,118 +2140,50 @@ def page_gdoc_submit():
     prog.progress(20, text="Analyzing editor edits…")
     editor_rounds, total_revs, annotated_revs = count_revision_rounds(parsed["revisions"], editor_name)
 
-    prog.progress(35, text="Exporting and comparing Google Doc revisions…")
-    writer_text, editor_text, writer_rev, editor_rev = fetch_writer_and_editor_revisions(
-        parsed["drive_svc"], parsed["svc_creds"],
-        extract_doc_id(doc_url), editor_name, parsed["revisions"]
-    )
+    prog.progress(35, text="Finding latest writer and editor versions…")
 
     diff_changes    = []
     diff_classified = []
-    diff_source     = None
-    revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), editor_name)
-    drive_activity_events = fetch_drive_activity_edit_events(parsed.get("svc_creds"), extract_doc_id(doc_url), editor_name)
-    revision_activity_source = "drive_revisions_api"
-    # Use the richer count source. Drive Activity often reflects Google Docs UI
-    # version-history activity better than Drive revisions().list().
-    if len(drive_activity_events) > len(revision_activity_events):
-        revision_activity_events = drive_activity_events
-        revision_activity_source = "drive_activity_api"
-    elif not revision_activity_events and parsed.get("revisions"):
-        # If editor-name matching failed, still show all Drive revision rows
-        # instead of showing 0 activity.
-        revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), "")
-        revision_activity_source = "drive_revisions_api_all_users_fallback"
+    diff_source     = "editor_handoff_last_writer_vs_last_editor"
+    revision_activity_events = []
+    revision_activity_source = "editor_handoff_only"
+    google_api_revision_activity_count = 0
+    pasted_revision_count = 0
+    writer_rev = None
+    editor_rev = None
 
-    google_api_revision_activity_count = len(revision_activity_events)
-
-    pasted_revision_count, manual_revision_events = count_editor_rows_from_paste(manual_revision_history, editor_name)
-    override_revision_events = make_manual_revision_count_events(
-        manual_visible_revision_count,
-        editor_name,
-        "manual_visible_revision_count_override"
-    )
-
-    # Manual visible history always wins when it is higher than Google API.
-    # This is the only reliable way to match the Google Docs right-sidebar UI,
-    # because Google APIs frequently expose fewer revision-history saves.
-    best_manual_events = manual_revision_events
-    best_manual_source = "manual_google_docs_version_history_paste"
-    if len(override_revision_events) > len(best_manual_events):
-        best_manual_events = override_revision_events
-        best_manual_source = "manual_visible_revision_count_override"
-
-    if best_manual_events and len(best_manual_events) > len(revision_activity_events):
-        revision_activity_events = best_manual_events
-        revision_activity_source = best_manual_source
-
-    # Primary mode: compare the writer's last handoff version with the editor's last version.
-    # This avoids Google Docs autosave/version-history noise and captures the final actual edits.
+    # Required silent edit logic: compare ONLY the writer's last saved version
+    # with the editor's last saved version, then score the actual text changes.
+    # No revision-by-revision fallback, no autosave counting, no manual sidebar count.
     handoff_status = "not_run"
-    if parsed.get("revisions") and silent_compare_mode.startswith("Editor handoff"):
-        prog.progress(50, text="Comparing last writer version vs last editor version…")
+    if parsed.get("revisions"):
+        prog.progress(50, text="Comparing latest writer version vs latest editor version…")
         handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
             parsed["drive_svc"], parsed["svc_creds"],
             extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
         )
+        writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
         if handoff_writer_text and handoff_editor_text:
             diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
             if lang == "Arabic":
                 diff_changes = _split_arabic_large_changes(diff_changes)
                 diff_changes = explode_changes_to_micro_edits(diff_changes, lang)
-            # Keep the revision activity count visible, but do not mix revision-save-only rows
-            # into the handoff text-change list. Scoring stays based on actual text differences.
+                diff_changes = _dedupe_diff_changes(diff_changes)
             if diff_changes:
-                prog.progress(60, text="Classifying editor handoff edits with AI…")
+                prog.progress(60, text="Classifying and scoring editor handoff edits…")
                 diff_classified = classify_diff_changes(diff_changes, platform, lang)
-                diff_source = "editor_handoff_last_writer_vs_last_editor"
-                writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
+            else:
+                diff_classified = []
+        else:
+            diff_classified = []
+    else:
+        handoff_status = "not_enough_revisions"
 
-    # Secondary mode/fallback: compare every consecutive revision.
-    if not diff_classified and parsed.get("revisions"):
-        prog.progress(50, text="Computing consecutive revision diffs…")
-        diff_changes, first_diff_rev, last_diff_rev = compute_consecutive_revision_diffs(
-            parsed["drive_svc"], parsed["svc_creds"],
-            extract_doc_id(doc_url), editor_name, parsed["revisions"], lang
+    if not diff_classified and handoff_status != "editor_handoff":
+        st.warning(
+            "Could not compare the latest writer version with the latest editor version. "
+            "Check that the writer/editor names match the Google Docs version history and that the document is shared with the service account as Editor."
         )
-        # Add zero-penalty visibility rows for revision saves that did not expose a text diff.
-        diff_changes = add_revision_event_visibility(diff_changes, revision_activity_events)
-        if diff_changes:
-            text_diff_changes = [ch for ch in diff_changes if ch.get("type") != "revision_event"]
-            event_only_changes = [ch for ch in diff_changes if ch.get("type") == "revision_event"]
-            prog.progress(60, text="Classifying editor edits with AI…")
-            diff_classified = classify_diff_changes(text_diff_changes, platform, lang) if text_diff_changes else []
-            diff_classified.extend(event_only_changes)
-            diff_source = "consecutive_revision_diff_plus_revision_events"
-
-    if not diff_classified and writer_text and editor_text:
-        # Fallback: writer vs final version
-        prog.progress(50, text="Computing diff between writer and editor versions…")
-        diff_changes = compute_diff(writer_text, editor_text)
-        if lang == "Arabic":
-            diff_changes = _split_arabic_large_changes(diff_changes)
-            diff_changes = explode_changes_to_micro_edits(diff_changes, lang)
-            diff_changes = _dedupe_diff_changes(diff_changes)
-        prog.progress(60, text="Classifying editor edits with AI…")
-        diff_classified = classify_diff_changes(diff_changes, platform, lang)
-        diff_source = "revision_diff"
-
-    elif parsed.get("suggestions"):
-        # Fallback: use tracked suggestions (editor used Suggesting mode)
-        prog.progress(55, text="Reading tracked suggestions…")
-        suggestions = parsed["suggestions"]
-        # Convert suggestions to diff-like changes for classification
-        pseudo_changes = []
-        for s in suggestions:
-            if s["type"] == "insert":
-                pseudo_changes.append({"tag": "insert", "original": "", "revised": s["text"]})
-            elif s["type"] == "delete":
-                pseudo_changes.append({"tag": "delete", "original": s["text"], "revised": ""})
-        if pseudo_changes:
-            prog.progress(60, text="Classifying tracked suggestions with AI…")
-            diff_classified = classify_diff_changes(pseudo_changes, platform, lang)
-            diff_changes    = pseudo_changes
-            diff_source     = "suggestions"
 
     prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
