@@ -698,6 +698,72 @@ def fetch_writer_and_editor_revisions(drive_svc, creds, doc_id, editor_name, rev
 
 
 
+def _revision_user_label(revision):
+    """Return the best available user label from a Google Drive revision."""
+    user = revision.get("lastModifyingUser", {}) or {}
+    return " ".join([
+        (user.get("displayName") or "").strip(),
+        (user.get("emailAddress") or "").strip(),
+    ]).strip().lower()
+
+
+def _name_matches_revision_user(name, revision):
+    """Tolerant matching for display names/emails in Drive revisions."""
+    needle = (name or "").strip().lower()
+    if not needle:
+        return False
+    label = _revision_user_label(revision)
+    if not label:
+        return False
+    needle_tokens = [t for t in re.split(r"[\s._@-]+", needle) if t]
+    label_tokens = [t for t in re.split(r"[\s._@-]+", label) if t]
+    if needle in label or label in needle:
+        return True
+    # Allow partial Arabic/English names such as "Aya" or "Mohammad Salem".
+    return bool(needle_tokens) and all(any(nt in lt or lt in nt for lt in label_tokens) for nt in needle_tokens)
+
+
+def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, base_editor_name, final_editor_name, revisions):
+    """
+    Compare the last version by the writer/base editor with the last version by
+    the final editor/reviewer.
+
+    This is more reliable for QA than counting every autosave because it answers:
+    what changed between the writer's final handoff and the editor's final version?
+    """
+    if not revisions or len(revisions) < 2:
+        return None, None, None, None, "not_enough_revisions"
+
+    ordered = sorted(revisions, key=_rev_sort_key_global)
+    final_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(final_editor_name, r)]
+    base_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(base_editor_name, r)]
+
+    if not final_matches or not base_matches:
+        return None, None, None, None, "editor_names_not_found_in_revisions"
+
+    final_idx = final_matches[-1]
+    # Prefer the last base/writer revision that happened before or at the first final editor edit.
+    first_final_idx = final_matches[0]
+    base_before_final = [i for i in base_matches if i < first_final_idx]
+    if not base_before_final:
+        # Fallback: last base revision before final latest revision.
+        base_before_final = [i for i in base_matches if i < final_idx]
+    if not base_before_final:
+        return None, None, None, None, "no_base_revision_before_final_editor"
+
+    base_idx = base_before_final[-1]
+    base_rev = ordered[base_idx]
+    final_rev = ordered[final_idx]
+
+    if base_rev.get("id") == final_rev.get("id"):
+        return None, None, None, None, "same_base_and_final_revision"
+
+    base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
+    final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
+    return base_text, final_text, base_rev, final_rev, "editor_handoff"
+
+
+
 def _revision_user_matches_editor(revision, editor_name):
     """Return True when the Google revision user looks like the selected editor."""
     editor_name_lower = (editor_name or "").strip().lower()
@@ -1836,6 +1902,18 @@ def page_gdoc_submit():
                 )
                 st.caption("Google APIs often expose fewer saves than the Google Docs sidebar. Paste the visible list or enter the visible count so the report shows the full editor activity. These rows are activity only; deductions still come from real text changes.")
 
+                st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Silent edit comparison mode</div>', unsafe_allow_html=True)
+                silent_compare_mode = st.selectbox(
+                    "Silent edit comparison mode",
+                    [
+                        "Editor handoff: last writer version vs last editor version",
+                        "Revision-by-revision: compare consecutive Google revisions",
+                    ],
+                    index=0,
+                    label_visibility="collapsed",
+                    help="Use editor handoff for scoring: it compares the writer's last saved version with the editor's last saved version. This avoids Google Docs autosave/version-history noise.",
+                )
+
                 st.markdown(f"""
 <div class="precheck">
   <div class="precheck-item {'done' if writer.strip() else ''}"><span class="precheck-dot">✓</span><span>Writer name</span></div>
@@ -1936,9 +2014,30 @@ def page_gdoc_submit():
         revision_activity_events = best_manual_events
         revision_activity_source = best_manual_source
 
-    # Primary: compare every consecutive revision, not only first vs final.
-    # This catches several Arabic silent edits that Google Docs may group into one final diff block.
-    if parsed.get("revisions"):
+    # Primary mode: compare the writer's last handoff version with the editor's last version.
+    # This avoids Google Docs autosave/version-history noise and captures the final actual edits.
+    handoff_status = "not_run"
+    if parsed.get("revisions") and silent_compare_mode.startswith("Editor handoff"):
+        prog.progress(50, text="Comparing last writer version vs last editor version…")
+        handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
+            parsed["drive_svc"], parsed["svc_creds"],
+            extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
+        )
+        if handoff_writer_text and handoff_editor_text:
+            diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
+            if lang == "Arabic":
+                diff_changes = _split_arabic_large_changes(diff_changes)
+                diff_changes = explode_changes_to_micro_edits(diff_changes, lang)
+            # Keep the revision activity count visible, but do not mix revision-save-only rows
+            # into the handoff text-change list. Scoring stays based on actual text differences.
+            if diff_changes:
+                prog.progress(60, text="Classifying editor handoff edits with AI…")
+                diff_classified = classify_diff_changes(diff_changes, platform, lang)
+                diff_source = "editor_handoff_last_writer_vs_last_editor"
+                writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
+
+    # Secondary mode/fallback: compare every consecutive revision.
+    if not diff_classified and parsed.get("revisions"):
         prog.progress(50, text="Computing consecutive revision diffs…")
         diff_changes, first_diff_rev, last_diff_rev = compute_consecutive_revision_diffs(
             parsed["drive_svc"], parsed["svc_creds"],
@@ -2015,6 +2114,8 @@ def page_gdoc_submit():
         "classified":      classified,
         "diff_classified": diff_classified,
         "diff_source":     diff_source,
+        "silent_compare_mode": silent_compare_mode,
+        "handoff_status":   locals().get("handoff_status", "not_run"),
         "revision_activity_count": len(revision_activity_events),
         "revision_activity_source": revision_activity_source,
         "revision_activity_events": revision_activity_events,
@@ -2116,11 +2217,14 @@ def render_gdoc_report(sub):
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
-        st.markdown(f"#### Silent editor activity — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
+        mode_label = "Silent editor handoff comparison" if sub.get("diff_source") == "editor_handoff_last_writer_vs_last_editor" else "Silent editor activity"
+        st.markdown(f"#### {mode_label} — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
         google_api_count = sub.get("google_api_revision_activity_count", 0)
         pasted_count = sub.get("pasted_revision_count", 0)
         manual_count = sub.get("manual_visible_revision_count", 0)
         st.caption(
+            f"Comparison mode: {sub.get('silent_compare_mode', 'N/A')}. "
+            f"Diff source: {sub.get('diff_source', 'N/A')}. "
             f"Activity source: {activity_source}. "
             f"Google API revision saves: {google_api_count} · "
             f"Pasted visible rows: {pasted_count} · "
