@@ -401,7 +401,7 @@ def _comment_artifact_terms():
     return [
         "الأفضل", "الافضل", "فالافضل", "فالأفضل", "عدلت", "تعديل", "ترجمتها", "ترجمت", "تُرجمت",
         "بتبلش", "بتبدأ", "ما الها داعي", "ما إلها داعي", "ملاحظة", "مكررة", "هون", "بالله",
-        "نعدلها", "الأدق", "ادقق", "comment", "note", "dining counters", "pre handover", "lap pool"
+        "نعدلها", "الأدق", "ادقق", "لما يكون", "بالالاف", "بالآلاف", "بالألاف", "X,000", "x,000", "comment", "note", "dining counters", "pre handover", "lap pool"
     ]
 
 
@@ -499,6 +499,19 @@ def clean_google_doc_export_artifacts(value):
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
+def sanitize_diff_side(value):
+    """
+    Clean one already-split diff side. This is stricter than document-level cleanup
+    because Google export can attach comment text to a single sentence/bullet after
+    sentence splitting.
+    """
+    value = clean_google_doc_export_artifacts(value)
+    value = _truncate_exported_comment_tail(value)
+    # Remove dangling connector words left by comment-marker cleanup.
+    value = re.sub(r"\s+(جزء|هون|أما|اما)$", "", value).strip()
+    value = re.sub(r"[ \t]{2,}", " ", value).strip()
+    return value
+
 def compute_diff(writer_text, editor_text):
     """
     Diff two versions of the doc at sentence/paragraph level.
@@ -520,12 +533,16 @@ def compute_diff(writer_text, editor_text):
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             continue
-        original = " ".join(w_sents[i1:i2]).strip()
-        revised = " ".join(e_sents[j1:j2]).strip()
+        original = sanitize_diff_side(" ".join(w_sents[i1:i2]).strip())
+        revised = sanitize_diff_side(" ".join(e_sents[j1:j2]).strip())
         if not original and not revised:
             continue
         if _looks_like_comment_artifact(original, revised):
             # Exported Google Docs comment text must never be counted as a silent edit.
+            continue
+        # If the only thing left on one side was a comment artifact, do not create
+        # a fake delete/insert edit from comment cleanup.
+        if not original or not revised:
             continue
         if looks_like_formatting_only(original, revised):
             # Formatting-only/tashkeel-only changes are kept only if meaningful enough.
