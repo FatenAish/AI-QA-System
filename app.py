@@ -2081,17 +2081,9 @@ def page_gdoc_submit():
                 manual_revision_history = ""
                 manual_visible_revision_count = 0
 
-                st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Silent edit comparison mode</div>', unsafe_allow_html=True)
-                silent_compare_mode = st.selectbox(
-                    "Silent edit comparison mode",
-                    [
-                        "Editor handoff: last writer version vs last editor version",
-                        "Revision-by-revision: compare consecutive Google revisions",
-                    ],
-                    index=0,
-                    label_visibility="collapsed",
-                    help="Use editor handoff for scoring: it compares the writer's last saved version with the editor's last saved version. This avoids Google Docs autosave/version-history noise.",
-                )
+                # Silent edit logic is fixed to editor handoff only:
+                # writer's latest available version vs editor's latest available version.
+                silent_compare_mode = "Editor handoff: last writer version vs last editor version"
 
                 st.markdown(f"""
 <div class="precheck">
@@ -2515,17 +2507,6 @@ def render_gdoc_report(sub):
                     f'<br>{c["text"]}<div class="cmt-deduct">−{c["deduction"]} pts deducted</div></div>',
                     unsafe_allow_html=True)
 
-    # Category scores
-    st.divider()
-    st.markdown("#### Category scores")
-    for cat, mx in CAT_MAX.items():
-        data = qa["scores"].get(cat, {}); s = data.get("score", 0)
-        fb   = data.get("feedback", ""); refs = data.get("comment_refs", [])
-        ref_html = " ".join(f'<span class="cat-ref">Comment {r}</span>' for r in refs)
-        ca, cb = st.columns([4, 1])
-        ca.markdown(f"**{cat}**" + (f" &nbsp; {ref_html}" if ref_html else ""), unsafe_allow_html=True)
-        ca.progress(s / mx); cb.markdown(f"**{s} / {mx}**"); st.caption(fb); st.markdown("")
-
     # Strengths / improvements
     col_s, col_i = st.columns(2)
     with col_s:
@@ -2606,16 +2587,6 @@ def render_report(sub):
         f'<div style="display:inline-block;margin:6px 0 8px;padding:3px 12px;border-radius:20px;background:{rbg};color:{rtc};font-size:11px;font-weight:500">{rl}</div>'
         f'<div class="score-verdict">{qa.get("overall_feedback","")}</div>'
         f'<div class="breakdown-box">{bd}</div></div>', unsafe_allow_html=True)
-
-    st.divider()
-    st.markdown("#### Category scores")
-    for cat, mx in CAT_MAX.items():
-        data = qa["scores"].get(cat, {}); s = data.get("score", 0)
-        fb   = data.get("feedback", ""); refs = data.get("comment_refs", [])
-        ref_html = " ".join(f'<span class="cat-ref">Comment {r}</span>' for r in refs)
-        ca, cb = st.columns([4, 1])
-        ca.markdown(f"**{cat}**" + (f" &nbsp; {ref_html}" if ref_html else ""), unsafe_allow_html=True)
-        ca.progress(s / mx); cb.markdown(f"**{s} / {mx}**"); st.caption(fb); st.markdown("")
 
     col_s, col_i = st.columns(2)
     with col_s:
