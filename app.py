@@ -779,7 +779,7 @@ def _looks_like_comment_artifact(original, revised):
     # Even without markers, exported notes often survive as English/Arabic editor talk.
     strong_phrases = [
         "dining counters", "pre handover", "lap pool", "بتبلش", "ما الها داعي", "ما إلها داعي",
-        "نعدلها", "مكررة", "هون pre", "ترجمتها", "تُرجمت", "عدلت الترجمة", "كلمة استوديو"
+        "نعدلها", "مكررة", "هون pre", "ترجمتها", "تُرجمت", "عدلت الترجمة", "كلمة استوديو", "لما يكون الرقم", "بالالاف", "بالآلاف", "الأفضل نوع", "افضل نوع"
     ]
     if any(p.lower() in lower for p in strong_phrases):
         return True
@@ -2329,6 +2329,62 @@ def page_gdoc_submit():
     st.success(f"Evaluation complete — Final score: **{final_score} / 100**")
     render_gdoc_report(sub)
 
+
+# ── Human-readable silent edit report helpers ───────────────────────────────
+def _short_clean_for_edit_report(value, limit=1200):
+    """Return clean text for the editorial edit report."""
+    value = sanitize_diff_side(value or "")
+    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"^[*\-•]\s*", "", value).strip()
+    if len(value) > limit:
+        return value[:limit].rstrip() + "…"
+    return value
+
+
+def _edit_report_type(d):
+    """Human-friendly edit type matching the user's preferred format."""
+    label = (d.get("label") or "").strip()
+    if label:
+        return label
+    typ = d.get("type", "")
+    return COMMENT_WEIGHTS.get(typ, COMMENT_WEIGHTS.get("rephrase", {})).get("label", "Edit")
+
+
+def _edit_report_title(d, idx):
+    """Short heading for each edit item."""
+    typ = (d.get("type") or "").strip()
+    label = _edit_report_type(d)
+    if typ in {"factual", "source_alignment", "wrong_info_removed", "missing_info_added", "contradiction_fixed"}:
+        return f"{idx}. Factual / source-related edit"
+    if typ == "structural":
+        return f"{idx}. Structural edit"
+    if typ == "arabic_language":
+        return f"{idx}. Arabic language edit"
+    if typ == "grammar":
+        return f"{idx}. Grammar / phrasing edit"
+    if typ == "formatting":
+        return f"{idx}. Formatting edit"
+    return f"{idx}. {label}"
+
+
+def _filter_real_text_edits_for_report(diff_classified):
+    """Remove revision events and leaked comment artifacts from displayed edits."""
+    rows = []
+    for d in diff_classified or []:
+        if d.get("type") == "revision_event":
+            continue
+        original = _short_clean_for_edit_report(d.get("original", ""))
+        revised = _short_clean_for_edit_report(d.get("revised", ""))
+        if not original and not revised:
+            continue
+        if _looks_like_comment_artifact(original, revised):
+            continue
+        nd = dict(d)
+        nd["original"] = original
+        nd["revised"] = revised
+        rows.append(nd)
+    return rows
+
 # ── Google Doc Report ──────────────────────────────────────────────────────
 def render_gdoc_report(sub):
     inject_css()
@@ -2436,29 +2492,36 @@ def render_gdoc_report(sub):
                 f"{diff_summary.get('raw_low_deduction')} pts, counted as "
                 f"{diff_summary.get('low_capped_deduction')} pts."
             )
-        for idx, d in enumerate(diff_classified, 1):
-            tag_label = {"replace": "Rewritten", "delete": "Deleted", "insert": "Added", "revision_event": "Revision save"}.get(d.get("tag"), "Changed")
-            original = _safe_html(d.get("original", "")[:300])
-            revised = _safe_html(d.get("revised", "")[:300])
-            reason = _safe_html(d.get("reason", ""))
-            old_fact = _safe_html(d.get("old_fact", ""))
-            new_fact = _safe_html(d.get("new_fact", ""))
-            severity = _safe_html(d.get("severity", ""))
+
+        # Human-readable edit report: writer version vs editor version.
+        report_edits = _filter_real_text_edits_for_report(diff_classified)
+        writer_label = (sub.get("writer") or "Writer").strip() or "Writer"
+        editor_label = (sub.get("editor_name") or "Editor").strip() or "Editor"
+
+        st.markdown("### Total")
+        st.markdown(f"**{len(report_edits)} detected text edits**")
+        st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
+
+        st.markdown("### All edits")
+        for idx, d in enumerate(report_edits, 1):
+            original = d.get("original", "")
+            revised = d.get("revised", "")
+            edit_type = _edit_report_type(d)
+            severity = (d.get("severity") or "").strip()
             meaning = "Meaning changed" if d.get("meaning_changed") else "No factual meaning change"
-            fact_line = ""
-            if old_fact or new_fact:
-                fact_line = f'<br><span style="font-size:10px;color:#64748b"><strong>Fact shift:</strong> {old_fact} → {new_fact}</span>'
-            st.markdown(
-                f'<div class="cmt-card" style="border-left-color:{d.get("color", "#e5e7eb")}">'
-                f'<span style="font-size:11px;font-weight:700;color:#374151">{idx}. {tag_label}</span>'
-                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{d.get("color", "#f1f5f9")};color:{d.get("tc", "#475569")};margin-left:8px">{_safe_html(d.get("label", "Edit"))}</span>'
-                f'<span style="font-size:10px;font-weight:700;color:#6b7280;margin-left:6px">{severity} · {meaning}</span>'
-                f'{("<br><span style=\"font-size:11px;color:#dc2626;text-decoration:line-through\">" + original + "</span>") if original else ""}'
-                f'{("<br><span style=\"font-size:11px;color:#059669\">" + revised + "</span>") if revised else ""}'
-                f'{fact_line}'
-                f'{("<br><span style=\"font-size:10px;color:#9ca3af\">" + reason + "</span>") if reason else ""}'
-                f'<div class="cmt-deduct">−{d.get("deduction", 0)} pts raw</div></div>',
-                unsafe_allow_html=True)
+            deduction = d.get("deduction", 0)
+            reason = (d.get("reason") or "").strip()
+
+            st.markdown(f"#### {_edit_report_title(d, idx)}")
+            if original:
+                st.markdown(f"**{writer_label}:** {original}")
+            if revised:
+                st.markdown(f"**{editor_label}:** {revised}")
+            st.markdown(f"**Edit type:** {edit_type}")
+            st.caption(f"Impact: {severity or 'N/A'} · {meaning} · Raw deduction: −{deduction} pts")
+            if reason:
+                st.caption(reason)
+            st.markdown("")
     elif sub.get("writer_rev") is None and editor_rounds > 0:
         st.divider()
         st.info("Silent edit scoring unavailable — the revision export could not be retrieved. Make sure the doc is shared with the service account as an Editor, then resubmit.")
