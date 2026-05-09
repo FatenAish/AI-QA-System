@@ -776,14 +776,24 @@ def _split_arabic_large_changes(changes):
 
 def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, revisions, lang):
     """
-    Compare consecutive Google Doc revisions instead of only first vs final.
-    This catches multiple Arabic silent edits that Google saves as separate revision snapshots.
+    Strict silent-edit mode:
+    - Compare ALL consecutive Google Doc revisions returned by Drive API.
+    - Do NOT filter by editor name here, because many docs have writer/editor activity under
+      the same visible Google account name, and filtering can hide real silent edits.
+    - Do NOT dedupe across revision pairs by default, because the user wants every edit event,
+      not only unique final changed blocks.
+    - For Arabic, split large paragraph replacements into micro token-level edits.
     """
     if not revisions or len(revisions) < 2:
         return [], None, None
 
+    def _rev_sort_key(item):
+        return item.get("modifiedTime", "") or item.get("id", "") or ""
+
+    ordered_revs = sorted(revisions, key=_rev_sort_key)
+
     exported = []
-    for rev in revisions:
+    for rev in ordered_revs:
         txt = export_revision_text(drive_svc, creds, doc_id, rev.get("id"))
         if txt and txt.strip():
             exported.append((rev, txt))
@@ -792,32 +802,45 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         return [], None, None
 
     all_changes = []
+    changed_revision_pairs = 0
+
     for idx in range(1, len(exported)):
         prev_rev, prev_text = exported[idx - 1]
         cur_rev, cur_text = exported[idx]
-
-        # Count only revisions made by the selected editor when possible.
-        if editor_name and not _revision_user_matches_editor(cur_rev, editor_name):
-            continue
 
         if normalize_for_compare(prev_text) == normalize_for_compare(cur_text):
             continue
 
         changes = compute_diff(prev_text, cur_text)
+        if not changes:
+            continue
+
+        changed_revision_pairs += 1
         for ch in changes:
             ch["revision_from"] = prev_rev.get("id")
             ch["revision_to"] = cur_rev.get("id")
             ch["revision_time"] = cur_rev.get("modifiedTime", "")
             ch["revision_user"] = (cur_rev.get("lastModifyingUser", {}) or {}).get("displayName", "")
+            ch["revision_pair_number"] = changed_revision_pairs
         all_changes.extend(changes)
 
     if lang == "Arabic":
         all_changes = _split_arabic_large_changes(all_changes)
         all_changes = explode_changes_to_micro_edits(all_changes, lang)
 
-    all_changes = _dedupe_diff_changes(all_changes)
+    # Keep repeated edits from different revision pairs. Only remove exact empty/identical artifacts.
+    cleaned = []
+    for ch in all_changes:
+        old_norm = normalize_for_compare(ch.get("original", ""))
+        new_norm = normalize_for_compare(ch.get("revised", ""))
+        if not old_norm and not new_norm:
+            continue
+        if old_norm == new_norm:
+            continue
+        cleaned.append(ch)
+    all_changes = cleaned
 
-    # If editor filtering found nothing, fall back to first vs final so the system still works.
+    # If consecutive export still found nothing, fall back to first vs final.
     if not all_changes:
         first_rev, first_text = exported[0]
         last_rev, last_text = exported[-1]
@@ -825,11 +848,9 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         if lang == "Arabic":
             fallback = _split_arabic_large_changes(fallback)
             fallback = explode_changes_to_micro_edits(fallback, lang)
-        all_changes = _dedupe_diff_changes(fallback)
-        return all_changes, first_rev, last_rev
+        return fallback, first_rev, last_rev
 
     return all_changes, exported[0][0], exported[-1][0]
-
 
 def extract_text_from_gdoc(doc):
     text, headings = [], []
