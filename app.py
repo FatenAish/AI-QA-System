@@ -77,6 +77,7 @@ COMMENT_WEIGHTS = {
 
 LOW_IMPACT_EDIT_TYPES = {"formatting", "rephrase", "grammar", "arabic_language"}
 HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
+EVENT_ONLY_EDIT_TYPES = {"revision_event"}
 REVISION_ROUND_PENALTY = 0.7  # per extra round
 
 RECORDS_FILE = "qa_records.json"
