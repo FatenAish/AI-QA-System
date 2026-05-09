@@ -967,6 +967,49 @@ def parse_pasted_google_docs_version_history(raw_text, editor_name=""):
 
     return events
 
+
+def make_manual_revision_count_events(count, editor_name="", source="manual_visible_revision_count_override"):
+    """
+    Create zero-penalty revision-save events from a manual visible count.
+    This is used when Google Docs UI shows many revision rows but Google APIs expose fewer.
+    """
+    try:
+        count = int(count or 0)
+    except Exception:
+        count = 0
+    if count <= 0:
+        return []
+    user = (editor_name or "Selected editor").strip() or "Selected editor"
+    return [{
+        "revision_id": f"manual_count:{i}",
+        "revision_time": "visible Google Docs version-history row",
+        "revision_user": user,
+        "revision_index": i,
+        "activity_source": source,
+    } for i in range(1, count + 1)]
+
+
+def count_editor_rows_from_paste(raw_text, editor_name=""):
+    """
+    Robust visible-history counter.
+    Primary method: parse timestamp + editor rows.
+    Fallback: count occurrences of the selected editor name in the pasted text.
+    """
+    parsed_events = parse_pasted_google_docs_version_history(raw_text, editor_name)
+    parsed_count = len(parsed_events)
+    if parsed_count:
+        return parsed_count, parsed_events
+
+    # Fallback for pasted text that loses timestamps/layout but keeps names.
+    import re
+    raw = str(raw_text or "")
+    name = (editor_name or "").strip()
+    if not raw.strip() or not name:
+        return 0, []
+    pattern = re.compile(r"(?im)^\s*" + re.escape(name) + r"\s*$")
+    count = len(pattern.findall(raw.replace("\u202f", " ").replace("\xa0", " ")))
+    return count, make_manual_revision_count_events(count, name, "manual_google_docs_version_history_name_count")
+
 def add_revision_event_visibility(diff_changes, revision_events):
     """
     Keep textual diff changes, but also add zero-penalty event-only rows for revision
@@ -1780,11 +1823,18 @@ def page_gdoc_submit():
                 st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Optional: paste Google Docs version-history list</div>', unsafe_allow_html=True)
                 manual_revision_history = st.text_area(
                     "Paste version history",
-                    placeholder="Paste the visible Google Docs Version history list here when Google API returns fewer revision saves than the UI.",
-                    height=120,
+                    placeholder="Paste the visible Google Docs Version history list here. Example:\nMay 7, 3:40 PM\nMohammad Salem\nMay 7, 3:36 PM\nMohammad Salem",
+                    height=150,
                     label_visibility="collapsed"
                 )
-                st.caption("Use this when Google Docs shows many saves, but the API returns only a few. These pasted rows are counted as revision-save activity only; they do not add text deductions.")
+                manual_visible_revision_count = st.number_input(
+                    "Optional visible revision-save count override",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    help="Use this only when you already counted the visible Google Docs rows for the selected editor. It overrides Google API count, but does not add score deductions.",
+                )
+                st.caption("Google APIs often expose fewer saves than the Google Docs sidebar. Paste the visible list or enter the visible count so the report shows the full editor activity. These rows are activity only; deductions still come from real text changes.")
 
                 st.markdown(f"""
 <div class="precheck">
@@ -1864,10 +1914,27 @@ def page_gdoc_submit():
         revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), "")
         revision_activity_source = "drive_revisions_api_all_users_fallback"
 
-    manual_revision_events = parse_pasted_google_docs_version_history(manual_revision_history, editor_name)
-    if manual_revision_events and len(manual_revision_events) > len(revision_activity_events):
-        revision_activity_events = manual_revision_events
-        revision_activity_source = "manual_google_docs_version_history_paste"
+    google_api_revision_activity_count = len(revision_activity_events)
+
+    pasted_revision_count, manual_revision_events = count_editor_rows_from_paste(manual_revision_history, editor_name)
+    override_revision_events = make_manual_revision_count_events(
+        manual_visible_revision_count,
+        editor_name,
+        "manual_visible_revision_count_override"
+    )
+
+    # Manual visible history always wins when it is higher than Google API.
+    # This is the only reliable way to match the Google Docs right-sidebar UI,
+    # because Google APIs frequently expose fewer revision-history saves.
+    best_manual_events = manual_revision_events
+    best_manual_source = "manual_google_docs_version_history_paste"
+    if len(override_revision_events) > len(best_manual_events):
+        best_manual_events = override_revision_events
+        best_manual_source = "manual_visible_revision_count_override"
+
+    if best_manual_events and len(best_manual_events) > len(revision_activity_events):
+        revision_activity_events = best_manual_events
+        revision_activity_source = best_manual_source
 
     # Primary: compare every consecutive revision, not only first vs final.
     # This catches several Arabic silent edits that Google Docs may group into one final diff block.
@@ -1951,6 +2018,9 @@ def page_gdoc_submit():
         "revision_activity_count": len(revision_activity_events),
         "revision_activity_source": revision_activity_source,
         "revision_activity_events": revision_activity_events,
+        "google_api_revision_activity_count": google_api_revision_activity_count,
+        "manual_visible_revision_count": int(manual_visible_revision_count or 0),
+        "pasted_revision_count": pasted_revision_count,
         "suggestions_raw": parsed.get("suggestions", []),
         "revisions":       annotated_revs,
         "editor_rounds":   editor_rounds,
@@ -2044,16 +2114,25 @@ def render_gdoc_report(sub):
         text_change_count = len([d for d in diff_classified if d.get("type") != "revision_event"])
         activity_count = sub.get("revision_activity_count", 0)
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
-        st.markdown(f"#### Silent editor activity — {activity_count or event_count} revision saves · {text_change_count} text changes found")
+        manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
+        count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
+        st.markdown(f"#### Silent editor activity — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
+        google_api_count = sub.get("google_api_revision_activity_count", 0)
+        pasted_count = sub.get("pasted_revision_count", 0)
+        manual_count = sub.get("manual_visible_revision_count", 0)
         st.caption(
             f"Activity source: {activity_source}. "
-            "If source is manual paste, the count comes from the visible Google Docs Version history list pasted into the form. "
-            "If source is Google API, it only shows saves exposed by Google APIs, which can be fewer than the UI. "
+            f"Google API revision saves: {google_api_count} · "
+            f"Pasted visible rows: {pasted_count} · "
+            f"Manual count override: {manual_count}. "
+            "Deductions are applied only to real text changes; revision-save-only rows are shown as activity with 0 pts. "
             f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
             f"Medium: {diff_summary.get('medium_count', 0)} · "
             f"Low-impact: {diff_summary.get('low_count', 0)} · "
             f"Event-only saves: {event_count}"
         )
+        if activity_source not in manual_sources and google_api_count < 20:
+            st.warning("Google API returned only a small number of revision saves. To match the Google Docs sidebar exactly, paste the visible version-history list or enter the visible count override before running the evaluation.")
         if diff_summary.get("low_cap_applied"):
             st.info(
                 f"Low-impact edits were capped: raw low-impact deduction was "
