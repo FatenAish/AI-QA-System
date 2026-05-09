@@ -396,12 +396,67 @@ def token_similarity(a, b):
 def looks_like_formatting_only(original, revised):
     return normalize_for_compare(original) == normalize_for_compare(revised)
 
+def clean_google_doc_export_artifacts(value):
+    """
+    Remove Google Docs exported comment/reference artifacts before diffing.
+    Google exports sometimes inline comments as [a], [b] markers and appends
+    editor notes after the final article text. These are not silent text edits.
+    """
+    text = str(value or "")
+    text = text.replace("\ufeff", "")
+
+    cleaned_lines = []
+    comment_words = [
+        "الأفضل", "الافضل", "عدلت", "تعديل", "ترجمتها", "ترجمتها", "بتبلش",
+        "ما الها داعي", "كون", "هان", "ملاحظة", "comment", "note"
+    ]
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            cleaned_lines.append(raw_line)
+            continue
+
+        markers = re.findall(r"\[[a-zA-Z]{1,3}\]", line)
+        lower_line = line.lower()
+
+        # Full exported comment/note line, not article content.
+        if markers and any(w in lower_line for w in comment_words) and len(markers) >= 1:
+            first_marker = re.search(r"\[[a-zA-Z]{1,3}\]", raw_line)
+            if first_marker:
+                # Keep article text before the first marker only, if any.
+                kept = raw_line[:first_marker.start()].rstrip()
+                if kept and len(kept.split()) >= 2:
+                    cleaned_lines.append(kept)
+                continue
+
+        # A dense marker line is usually an exported comment block.
+        if len(markers) >= 2 and len(line.split()) > 6:
+            first_marker = re.search(r"\[[a-zA-Z]{1,3}\]", raw_line)
+            if first_marker:
+                kept = raw_line[:first_marker.start()].rstrip()
+                if kept and len(kept.split()) >= 2:
+                    cleaned_lines.append(kept)
+                continue
+
+        # Normal article line: remove reference markers only.
+        raw_line = re.sub(r"\[[a-zA-Z]{1,3}\]", "", raw_line)
+        cleaned_lines.append(raw_line)
+
+    text = "\n".join(cleaned_lines)
+    text = re.sub(r"\[[a-zA-Z]{1,3}\]", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
 def compute_diff(writer_text, editor_text):
     """
     Diff two versions of the doc at sentence/paragraph level.
     Returns list of {tag, original, revised, similarity} dicts.
     Arabic-aware: ignores tashkeel, tatweel and punctuation-only changes.
     """
+    writer_text = clean_google_doc_export_artifacts(writer_text)
+    editor_text = clean_google_doc_export_artifacts(editor_text)
+
     w_sents = split_sentences_smart(writer_text)
     e_sents = split_sentences_smart(editor_text)
 
@@ -634,6 +689,18 @@ Every change must be classified. Use one of: {allowed}.
         })
     return classified
 
+def _extract_numbers_for_fact_check(value):
+    return re.findall(r"\d+(?:[,.]\d+)?", str(value or ""))
+
+def _number_sets_differ(a, b):
+    return set(_extract_numbers_for_fact_check(a)) != set(_extract_numbers_for_fact_check(b))
+
+def _looks_like_comment_artifact(original, revised):
+    both = f"{original} {revised}"
+    markers = re.findall(r"\[[a-zA-Z]{1,3}\]", both)
+    comment_words = ["الأفضل", "الافضل", "عدلت", "ترجمتها", "بتبلش", "ما الها داعي", "ملاحظة", "comment", "note"]
+    return bool(markers) and any(w in both.lower() for w in comment_words)
+
 def fallback_diff_type(ch, lang):
     original = ch.get("original", "") or ""
     revised = ch.get("revised", "") or ""
@@ -646,14 +713,53 @@ def fallback_diff_type(ch, lang):
     except Exception:
         sim = token_similarity(original, revised)
 
+    if _looks_like_comment_artifact(original, revised):
+        return "formatting"
+
+    source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي", "url", "http"]
+    hard_fact_keywords = [
+        "aed", "price", "handover", "payment", "floor", "floors", "sqft", "sq ft",
+        "school", "clinic", "hospital", "metro", "mall", "airport", "minutes", "drive",
+        "درهم", "السعر", "أسعار", "تسليم", "الدفع", "طابق", "قدم", "مربع",
+        "مدرسة", "عيادة", "مستشفى", "مترو", "مول", "مطار", "دقيقة", "بالسيارة"
+    ]
+
+    # Arabic edits are usually translation/phrasing unless a measurable/source-backed fact changes.
+    if ar or lang == "Arabic":
+        if tag == "delete" and len(original.split()) >= 8:
+            if any(k in both for k in source_keywords):
+                return "wrong_info_removed"
+            if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
+                return "wrong_info_removed"
+            return "rephrase" if len(original.split()) < 25 else "structural"
+
+        if tag == "insert" and len(revised.split()) >= 8:
+            if any(k in both for k in source_keywords):
+                return "missing_info_added"
+            if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
+                return "missing_info_added"
+            return "rephrase" if len(revised.split()) < 25 else "brand_voice"
+
+        if any(k in both for k in source_keywords) and sim < 0.90:
+            return "source_alignment"
+
+        # Only mark factual when numbers or clearly measurable details changed.
+        if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
+            return "factual"
+
+        if sim >= 0.82:
+            return "arabic_language"
+        if sim >= 0.62:
+            return "rephrase"
+        if abs(len(revised.split()) - len(original.split())) > 25:
+            return "structural"
+        return "rephrase"
+
     fact_keywords = [
         "aed", "price", "handover", "developer", "location", "bedroom", "studio",
         "sqft", "sq ft", "payment", "floor", "floors", "amenity", "amenities",
-        "dubai", "abu dhabi", "dld", "rera", "unit", "units", "villa", "apartment",
-        "درهم", "سعر", "أسعار", "المطور", "الموقع", "غرفة", "غرف", "استوديو",
-        "قدم", "مربع", "خطة", "الدفع", "طابق", "مرافق", "دبي", "أبوظبي", "وحدة", "شقة", "فيلا"
+        "dld", "rera", "unit", "units", "villa", "apartment"
     ]
-    source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي"]
 
     if tag == "delete" and len(original.split()) >= 6:
         if any(k in both for k in fact_keywords + source_keywords):
@@ -667,8 +773,6 @@ def fallback_diff_type(ch, lang):
         return "source_alignment"
     if any(k in both for k in fact_keywords) and sim < 0.88:
         return "factual"
-    if ar or lang == "Arabic":
-        return "arabic_language" if sim >= 0.82 else "rephrase"
     if sim >= 0.90:
         return "grammar"
     if abs(len(revised.split()) - len(original.split())) > 20:
@@ -2217,8 +2321,12 @@ def render_gdoc_report(sub):
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
-        mode_label = "Silent editor handoff comparison" if sub.get("diff_source") == "editor_handoff_last_writer_vs_last_editor" else "Silent editor activity"
-        st.markdown(f"#### {mode_label} — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
+        is_handoff = sub.get("diff_source") == "editor_handoff_last_writer_vs_last_editor"
+        mode_label = "Editor edits to writer's last version" if is_handoff else "Silent editor activity"
+        if is_handoff:
+            st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
+        else:
+            st.markdown(f"#### {mode_label} — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
         google_api_count = sub.get("google_api_revision_activity_count", 0)
         pasted_count = sub.get("pasted_revision_count", 0)
         manual_count = sub.get("manual_visible_revision_count", 0)
@@ -2229,7 +2337,7 @@ def render_gdoc_report(sub):
             f"Google API revision saves: {google_api_count} · "
             f"Pasted visible rows: {pasted_count} · "
             f"Manual count override: {manual_count}. "
-            "Deductions are applied only to real text changes; revision-save-only rows are shown as activity with 0 pts. "
+            "Detected edits are counted from the text difference between the writer's last version and the editor's last version; revision-save-only rows stay 0 pts. "
             f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
             f"Medium: {diff_summary.get('medium_count', 0)} · "
             f"Low-impact: {diff_summary.get('low_count', 0)} · "
