@@ -2075,21 +2075,11 @@ def page_gdoc_submit():
                                         label_visibility="collapsed")
                 st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
-                st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Optional: paste Google Docs version-history list</div>', unsafe_allow_html=True)
-                manual_revision_history = st.text_area(
-                    "Paste version history",
-                    placeholder="Paste the visible Google Docs Version history list here. Example:\nMay 7, 3:40 PM\nMohammad Salem\nMay 7, 3:36 PM\nMohammad Salem",
-                    height=150,
-                    label_visibility="collapsed"
-                )
-                manual_visible_revision_count = st.number_input(
-                    "Optional visible revision-save count override",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    help="Use this only when you already counted the visible Google Docs rows for the selected editor. It overrides Google API count, but does not add score deductions.",
-                )
-                st.caption("Google APIs often expose fewer saves than the Google Docs sidebar. Paste the visible list or enter the visible count so the report shows the full editor activity. These rows are activity only; deductions still come from real text changes.")
+                # Hidden: version-history paste/count override removed from UI.
+                # The system now focuses on the actual handoff comparison:
+                # writer's latest available version vs editor's latest available version.
+                manual_revision_history = ""
+                manual_visible_revision_count = 0
 
                 st.markdown('<div style="font-size:12px;font-weight:800;color:#374151;margin:14px 0 6px">Silent edit comparison mode</div>', unsafe_allow_html=True)
                 silent_compare_mode = st.selectbox(
@@ -2471,21 +2461,7 @@ def render_gdoc_report(sub):
         google_api_count = sub.get("google_api_revision_activity_count", 0)
         pasted_count = sub.get("pasted_revision_count", 0)
         manual_count = sub.get("manual_visible_revision_count", 0)
-        st.caption(
-            f"Comparison mode: {sub.get('silent_compare_mode', 'N/A')}. "
-            f"Diff source: {sub.get('diff_source', 'N/A')}. "
-            f"Activity source: {activity_source}. "
-            f"Google API revision saves: {google_api_count} · "
-            f"Pasted visible rows: {pasted_count} · "
-            f"Manual count override: {manual_count}. "
-            "Detected edits are counted from the text difference between the writer's last version and the editor's last version; revision-save-only rows stay 0 pts. "
-            f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
-            f"Medium: {diff_summary.get('medium_count', 0)} · "
-            f"Low-impact: {diff_summary.get('low_count', 0)} · "
-            f"Event-only saves: {event_count}"
-        )
-        if activity_source not in manual_sources and google_api_count < 20:
-            st.warning("Google API returned only a small number of revision saves. To match the Google Docs sidebar exactly, paste the visible version-history list or enter the visible count override before running the evaluation.")
+        # Internal API/revision details are intentionally hidden from the report UI.
         if diff_summary.get("low_cap_applied"):
             st.info(
                 f"Low-impact edits were capped: raw low-impact deduction was "
@@ -2498,30 +2474,31 @@ def render_gdoc_report(sub):
         writer_label = (sub.get("writer") or "Writer").strip() or "Writer"
         editor_label = (sub.get("editor_name") or "Editor").strip() or "Editor"
 
-        st.markdown("### Total")
-        st.markdown(f"**{len(report_edits)} detected text edits**")
-        st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
+        with st.expander(f"View all editor edits — {len(report_edits)} detected edits", expanded=False):
+            st.markdown("### Total")
+            st.markdown(f"**{len(report_edits)} detected text edits**")
+            st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
 
-        st.markdown("### All edits")
-        for idx, d in enumerate(report_edits, 1):
-            original = d.get("original", "")
-            revised = d.get("revised", "")
-            edit_type = _edit_report_type(d)
-            severity = (d.get("severity") or "").strip()
-            meaning = "Meaning changed" if d.get("meaning_changed") else "No factual meaning change"
-            deduction = d.get("deduction", 0)
-            reason = (d.get("reason") or "").strip()
+            st.markdown("### All edits")
+            for idx, d in enumerate(report_edits, 1):
+                original = d.get("original", "")
+                revised = d.get("revised", "")
+                edit_type = _edit_report_type(d)
+                severity = (d.get("severity") or "").strip()
+                meaning = "Meaning changed" if d.get("meaning_changed") else "No factual meaning change"
+                deduction = d.get("deduction", 0)
+                reason = (d.get("reason") or "").strip()
 
-            st.markdown(f"#### {_edit_report_title(d, idx)}")
-            if original:
-                st.markdown(f"**{writer_label}:** {original}")
-            if revised:
-                st.markdown(f"**{editor_label}:** {revised}")
-            st.markdown(f"**Edit type:** {edit_type}")
-            st.caption(f"Impact: {severity or 'N/A'} · {meaning} · Raw deduction: −{deduction} pts")
-            if reason:
-                st.caption(reason)
-            st.markdown("")
+                st.markdown(f"#### {_edit_report_title(d, idx)}")
+                if original:
+                    st.markdown(f"**{writer_label}:** {original}")
+                if revised:
+                    st.markdown(f"**{editor_label}:** {revised}")
+                st.markdown(f"**Edit type:** {edit_type}")
+                st.caption(f"Impact: {severity or 'N/A'} · {meaning} · Raw deduction: −{deduction} pts")
+                if reason:
+                    st.caption(reason)
+                st.markdown("")
     elif sub.get("writer_rev") is None and editor_rounds > 0:
         st.divider()
         st.info("Silent edit scoring unavailable — the revision export could not be retrieved. Make sure the doc is shared with the service account as an Editor, then resubmit.")
@@ -2529,14 +2506,14 @@ def render_gdoc_report(sub):
     # Classified comments
     if classified:
         st.divider()
-        st.markdown(f"#### Editor comments — {len(classified)} found")
-        for idx, c in enumerate(classified, 1):
-            st.markdown(
-                f'<div class="cmt-card" style="border-left-color:{c["color"]}">'
-                f'<span class="cmt-author">{c["author"]}</span>'
-                f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{c["color"]};color:{c["tc"]};margin-left:8px">{c["label"]}</span>'
-                f'<br>{c["text"]}<div class="cmt-deduct">−{c["deduction"]} pts deducted</div></div>',
-                unsafe_allow_html=True)
+        with st.expander(f"View editor comments — {len(classified)} found", expanded=False):
+            for idx, c in enumerate(classified, 1):
+                st.markdown(
+                    f'<div class="cmt-card" style="border-left-color:{c["color"]}">'
+                    f'<span class="cmt-author">{c["author"]}</span>'
+                    f'<span style="font-size:10px;font-weight:500;padding:1px 8px;border-radius:20px;background:{c["color"]};color:{c["tc"]};margin-left:8px">{c["label"]}</span>'
+                    f'<br>{c["text"]}<div class="cmt-deduct">−{c["deduction"]} pts deducted</div></div>',
+                    unsafe_allow_html=True)
 
     # Category scores
     st.divider()
