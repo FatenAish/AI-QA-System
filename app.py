@@ -774,6 +774,79 @@ def _split_arabic_large_changes(changes):
     return refined
 
 
+
+def _rev_sort_key_global(item):
+    return item.get("modifiedTime", "") or item.get("id", "") or ""
+
+
+def _revision_display_name(revision):
+    return ((revision.get("lastModifyingUser", {}) or {}).get("displayName", "") or "").strip()
+
+
+def get_revision_activity_events(revisions, editor_name=""):
+    """
+    Count every Google revision-history row returned by Drive API.
+
+    Important: Google Docs UI may show many saves where exporting the document text
+    produces the same plain-text result. Those rows are still editorial activity and
+    should be visible to the user, even if they cannot be converted into a textual
+    before/after diff.
+    """
+    if not revisions:
+        return []
+    editor_name_lower = (editor_name or "").strip().lower()
+    ordered = sorted(revisions, key=_rev_sort_key_global)
+    events = []
+    for idx, r in enumerate(ordered, 1):
+        display = _revision_display_name(r)
+        display_lower = display.lower()
+        if editor_name_lower:
+            # Match selected editor name, but stay tolerant of partial names.
+            if not (editor_name_lower in display_lower or display_lower in editor_name_lower):
+                continue
+        events.append({
+            "revision_id": r.get("id", ""),
+            "revision_time": r.get("modifiedTime", ""),
+            "revision_user": display,
+            "revision_index": idx,
+        })
+    return events
+
+
+def add_revision_event_visibility(diff_changes, revision_events):
+    """
+    Keep textual diff changes, but also add zero-penalty event-only rows for revision
+    saves that produced no detectable plain-text diff. This makes the report reflect
+    all Google Docs version-history activity instead of hiding saves that Google export
+    cannot diff.
+    """
+    diff_changes = list(diff_changes or [])
+    revision_events = list(revision_events or [])
+    changed_to_ids = {str(ch.get("revision_to", "")) for ch in diff_changes if ch.get("revision_to")}
+    existing_event_ids = {str(ch.get("revision_to", "")) for ch in diff_changes if ch.get("type") == "revision_event"}
+    for ev in revision_events:
+        rid = str(ev.get("revision_id", ""))
+        if not rid or rid in changed_to_ids or rid in existing_event_ids:
+            continue
+        diff_changes.append({
+            "tag": "revision_event",
+            "type": "revision_event",
+            "label": "Revision save event",
+            "deduction": 0.0,
+            "color": "#f8fafc",
+            "tc": "#64748b",
+            "severity": "event-only",
+            "meaning_changed": False,
+            "original": "",
+            "revised": f"Revision saved by {ev.get('revision_user','Unknown')} at {ev.get('revision_time','')}. Google export did not expose a separate plain-text before/after change for this save.",
+            "reason": "Counted from Google Docs version history. No score deduction because no exact text diff was available from the API export.",
+            "revision_to": rid,
+            "revision_time": ev.get("revision_time", ""),
+            "revision_user": ev.get("revision_user", ""),
+            "revision_pair_number": ev.get("revision_index", 0),
+        })
+    return diff_changes
+
 def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, revisions, lang):
     """
     Strict silent-edit mode:
@@ -1160,8 +1233,9 @@ def capped_low_impact_deduction(items):
     Low-impact silent edits should not destroy the score.
     Factual/source edits are counted fully; grammar/rephrase/formatting has a soft cap.
     """
+    events = [d for d in items if d.get("type") in EVENT_ONLY_EDIT_TYPES]
     high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
-    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES]
+    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES and d.get("type") not in EVENT_ONLY_EDIT_TYPES]
     low = [d for d in items if d.get("type") in LOW_IMPACT_EDIT_TYPES]
 
     high_total = sum(float(d.get("deduction", 0)) for d in high)
@@ -1172,6 +1246,7 @@ def capped_low_impact_deduction(items):
     # like one with wrong facts. The first 10 count normally, then cap at 8 pts.
     low_total = min(raw_low_total, 8.0)
     return high_total + medium_total + low_total, {
+        "event_count": len(events),
         "high_count": len(high),
         "medium_count": len(medium),
         "low_count": len(low),
@@ -1612,6 +1687,7 @@ def page_gdoc_submit():
     diff_changes    = []
     diff_classified = []
     diff_source     = None
+    revision_activity_events = get_revision_activity_events(parsed.get("revisions", []), editor_name)
 
     # Primary: compare every consecutive revision, not only first vs final.
     # This catches several Arabic silent edits that Google Docs may group into one final diff block.
@@ -1621,10 +1697,15 @@ def page_gdoc_submit():
             parsed["drive_svc"], parsed["svc_creds"],
             extract_doc_id(doc_url), editor_name, parsed["revisions"], lang
         )
+        # Add zero-penalty visibility rows for revision saves that did not expose a text diff.
+        diff_changes = add_revision_event_visibility(diff_changes, revision_activity_events)
         if diff_changes:
+            text_diff_changes = [ch for ch in diff_changes if ch.get("type") != "revision_event"]
+            event_only_changes = [ch for ch in diff_changes if ch.get("type") == "revision_event"]
             prog.progress(60, text="Classifying editor edits with AI…")
-            diff_classified = classify_diff_changes(diff_changes, platform, lang)
-            diff_source = "consecutive_revision_diff"
+            diff_classified = classify_diff_changes(text_diff_changes, platform, lang) if text_diff_changes else []
+            diff_classified.extend(event_only_changes)
+            diff_source = "consecutive_revision_diff_plus_revision_events"
 
     if not diff_classified and writer_text and editor_text:
         # Fallback: writer vs final version
@@ -1687,6 +1768,8 @@ def page_gdoc_submit():
         "classified":      classified,
         "diff_classified": diff_classified,
         "diff_source":     diff_source,
+        "revision_activity_count": len(revision_activity_events),
+        "revision_activity_events": revision_activity_events,
         "suggestions_raw": parsed.get("suggestions", []),
         "revisions":       annotated_revs,
         "editor_rounds":   editor_rounds,
@@ -1776,12 +1859,17 @@ def render_gdoc_report(sub):
     if diff_classified:
         st.divider()
         diff_summary = ded.get("diff_summary", {})
-        st.markdown(f"#### Silent editor edits — {len(diff_classified)} changes found")
+        event_count = diff_summary.get("event_count", 0)
+        text_change_count = len([d for d in diff_classified if d.get("type") != "revision_event"])
+        activity_count = sub.get("revision_activity_count", 0)
+        st.markdown(f"#### Silent editor activity — {activity_count or event_count} revision saves · {text_change_count} text changes found")
         st.caption(
-            "The system separates low-impact wording cleanup from factual/source corrections. "
-            f"High-impact: {diff_summary.get('high_count', 0)} · "
+            "The system now shows every revision-history save returned by Google for the selected editor, "
+            "even when Google export does not expose a separate before/after text diff. "
+            f"High-impact text changes: {diff_summary.get('high_count', 0)} · "
             f"Medium: {diff_summary.get('medium_count', 0)} · "
-            f"Low-impact: {diff_summary.get('low_count', 0)}"
+            f"Low-impact: {diff_summary.get('low_count', 0)} · "
+            f"Event-only saves: {event_count}"
         )
         if diff_summary.get("low_cap_applied"):
             st.info(
@@ -1790,7 +1878,7 @@ def render_gdoc_report(sub):
                 f"{diff_summary.get('low_capped_deduction')} pts."
             )
         for idx, d in enumerate(diff_classified, 1):
-            tag_label = {"replace": "Rewritten", "delete": "Deleted", "insert": "Added"}.get(d.get("tag"), "Changed")
+            tag_label = {"replace": "Rewritten", "delete": "Deleted", "insert": "Added", "revision_event": "Revision save"}.get(d.get("tag"), "Changed")
             original = _safe_html(d.get("original", "")[:300])
             revised = _safe_html(d.get("revised", "")[:300])
             reason = _safe_html(d.get("reason", ""))
