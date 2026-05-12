@@ -1712,8 +1712,12 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
 
 def capped_low_impact_deduction(items):
     """
-    Low-impact silent edits should not destroy the score.
-    Factual/source edits are counted fully; grammar/rephrase/formatting has a soft cap.
+    Count every detected silent text edit in the score.
+
+    Earlier versions capped low-impact edits at 8 points, which meant the edit
+    count could increase while the final score stayed the same. For this QA
+    system, the score must reflect the actual number of detected word/phrase
+    edits, so grammar/rephrase/Arabic-language edits are no longer capped.
     """
     events = [d for d in items if d.get("type") in EVENT_ONLY_EDIT_TYPES]
     high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
@@ -1724,27 +1728,28 @@ def capped_low_impact_deduction(items):
     medium_total = sum(float(d.get("deduction", 0)) for d in medium)
     raw_low_total = sum(float(d.get("deduction", 0)) for d in low)
 
-    # Low-impact edits matter, but cap them so a polished article is not punished
-    # like one with wrong facts. The first 10 count normally, then cap at 8 pts.
-    low_total = min(raw_low_total, 8.0)
+    # No cap: if the system detects more real edits, the score changes.
+    low_total = raw_low_total
+
     return high_total + medium_total + low_total, {
         "event_count": len(events),
         "high_count": len(high),
         "medium_count": len(medium),
         "low_count": len(low),
         "raw_low_deduction": round(raw_low_total, 1),
-        "low_cap_applied": raw_low_total > low_total,
+        "low_cap_applied": False,
         "low_capped_deduction": round(low_total, 1),
+        "low_uncapped_deduction": round(low_total, 1),
     }
 
 def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
     """
-    Score = 100 − comment deductions − smart silent-edit deductions − rounds penalty.
-    Silent edits use richer categories and a low-impact cap.
+    Score = 100 − comment deductions − silent-edit deductions − rounds penalty.
+    Every detected silent text edit is counted; low-impact edits are not capped.
     """
     comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
 
-    # Diff deductions: factual/source changes count fully; grammar/rephrase is capped.
+    # Diff deductions: factual/source changes and low-impact grammar/rephrase edits all count.
     diff_deduction, diff_summary = capped_low_impact_deduction(diff_classified)
 
     # Rounds penalty
@@ -2375,7 +2380,9 @@ def render_gdoc_report(sub):
         raw_tot = sum(float(i.get("deduction", 0)) for i in items)
         row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
         diff_rows += brow(row_cls, f'Silent edits — {w["label"]} ({len(items)} found)', f'−{round(raw_tot,1)} raw')
-    if diff_summary.get("low_cap_applied"):
+    if diff_summary.get("low_count", 0) and not diff_summary.get("low_cap_applied"):
+        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
+    elif diff_summary.get("low_cap_applied"):
         diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
@@ -2425,6 +2432,12 @@ def render_gdoc_report(sub):
                 f"Low-impact edits were capped: raw low-impact deduction was "
                 f"{diff_summary.get('raw_low_deduction')} pts, counted as "
                 f"{diff_summary.get('low_capped_deduction')} pts."
+            )
+        elif diff_summary.get("low_count", 0):
+            st.info(
+                f"Low-impact edits are not capped: all "
+                f"{diff_summary.get('low_count')} grammar/rephrase/formatting edits were counted "
+                f"for −{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts."
             )
 
         # Human-readable edit report: writer version vs editor version.
