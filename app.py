@@ -576,52 +576,67 @@ def _micro_context(tokens, start, end, window=5):
 
 def _explode_change_to_micro_edits(change, lang):
     """
-    Break one large replace block into multiple token-level silent edits.
-    This is important for Arabic because Google Docs often groups many small Arabic
-    changes inside one paragraph as one replacement block.
+    Break Arabic paragraph-level replace blocks into individual word/phrase edits.
+
+    The old version was too conservative and could keep short Arabic paragraph
+    replacements grouped as one edit. This version explodes every valid Arabic
+    replace block into token-level edits whenever a clean micro edit is detected.
     """
     original = change.get("original", "") or ""
     revised = change.get("revised", "") or ""
     tag = change.get("tag", "")
 
     has_arabic = re.search(r"[\u0600-\u06FF]", original + revised) is not None
+
+    # Only explode replace blocks for Arabic content.
     if tag != "replace" or (lang != "Arabic" and not has_arabic):
         return [change]
 
     old_tokens = _tokenize_for_micro_diff(original)
     new_tokens = _tokenize_for_micro_diff(revised)
-    if not old_tokens or not new_tokens:
-        return [change]
 
-    # Do not explode tiny edits; keep them as one meaningful change.
-    non_equal_estimate = abs(len(old_tokens) - len(new_tokens))
-    if max(len(old_tokens), len(new_tokens)) < 10 and non_equal_estimate < 3:
+    if not old_tokens or not new_tokens:
         return [change]
 
     old_norm = [normalize_for_compare(t) for t in old_tokens]
     new_norm = [normalize_for_compare(t) for t in new_tokens]
+
     sm = difflib.SequenceMatcher(None, old_norm, new_norm, autojunk=False)
 
     edits = []
+
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op == "equal":
             continue
 
         old_part = " ".join(old_tokens[i1:i2]).strip()
         new_part = " ".join(new_tokens[j1:j2]).strip()
+
         if not old_part and not new_part:
             continue
+
         if looks_like_formatting_only(old_part, new_part):
             continue
 
-        # Ignore extremely tiny punctuation/spacing artifacts after normalization.
-        if len(normalize_for_compare(old_part + new_part)) < 2:
+        old_clean = normalize_for_compare(old_part)
+        new_clean = normalize_for_compare(new_part)
+
+        if not old_clean and not new_clean:
+            continue
+
+        # Ignore empty/very tiny noise after normalization.
+        if len(old_clean + new_clean) < 2:
             continue
 
         old_ctx = _micro_context(old_tokens, i1, i2)
         new_ctx = _micro_context(new_tokens, j1, j2)
-        micro = {
-            **{k: v for k, v in change.items() if k not in {"original", "revised", "similarity", "word_delta", "tag"}},
+
+        edits.append({
+            **{
+                k: v
+                for k, v in change.items()
+                if k not in {"original", "revised", "similarity", "word_delta", "tag"}
+            },
             "tag": op,
             "original": old_part[:700],
             "revised": new_part[:700],
@@ -630,12 +645,11 @@ def _explode_change_to_micro_edits(change, lang):
             "similarity": round(token_similarity(old_part, new_part), 3),
             "word_delta": len(new_part.split()) - len(old_part.split()),
             "micro_edit": True,
-        }
-        edits.append(micro)
+        })
 
-    # If token-level diff produced enough detail, use it. Otherwise keep the original block.
-    return edits if len(edits) >= 2 else [change]
-
+    # Important: if even one valid micro edit is found, use it.
+    # Do not fall back to paragraph-level grouping unless no micro edits exist.
+    return edits if edits else [change]
 
 def explode_changes_to_micro_edits(changes, lang):
     """Apply micro-edit splitting to a list of diff changes."""
