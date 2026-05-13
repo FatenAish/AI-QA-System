@@ -510,59 +510,106 @@ def sanitize_diff_side(value):
     value = re.sub(r"[ \t]{2,}", " ", value).strip()
     return value
 
+def _strict_token_key(token):
+    """Strict token key for all-change diffing. Keeps punctuation as real edits."""
+    token = str(token or "")
+    arabic_diacritics = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
+    token = arabic_diacritics.sub("", token)
+    token = re.sub(r"[\u0640]", "", token)
+    return token.strip().lower()
+
+
+def _tokenize_all_text_changes(text):
+    """
+    Tokenize text for strict all-change comparison.
+    Keeps Arabic/English words, numbers, and punctuation as separate tokens.
+    Whitespace-only changes are ignored, but every visible text change is kept.
+    """
+    text = str(text or "")
+    return re.findall(
+        r"[\u0600-\u06FFA-Za-z0-9]+(?:[-_/][\u0600-\u06FFA-Za-z0-9]+)*|[^\s]",
+        text,
+        flags=re.UNICODE,
+    )
+
+
+def _join_tokens_readable(tokens):
+    """Join diff tokens into readable text without creating too much punctuation noise."""
+    text = " ".join(tokens or [])
+    text = re.sub(r"\s+([،؛,.!?؟:;\)\]\}])", r"\1", text)
+    text = re.sub(r"([\(\[\{])\s+", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+
+def _token_context(tokens, start, end, window=8):
+    left = max(0, start - window)
+    right = min(len(tokens), end + window)
+    return _join_tokens_readable(tokens[left:right])
+
+
 def compute_diff(writer_text, editor_text):
     """
-    Diff two versions of the doc at sentence/paragraph level.
-    Returns list of {tag, original, revised, similarity} dicts.
-    Arabic-aware: ignores tashkeel, tatweel and punctuation-only changes.
+    Strict all-change diff between writer and editor text.
+
+    This intentionally works at token level, not paragraph level, so the report
+    shows every actual text change between the writer's last version and the
+    editor's last version: replacements, insertions, deletions, numbers, names,
+    locations, short words, and punctuation.
+
+    Whitespace-only differences are ignored. Google Docs exported comment
+    artifacts are still filtered so comments are not counted as silent edits.
     """
     writer_text = clean_google_doc_export_artifacts(writer_text)
     editor_text = clean_google_doc_export_artifacts(editor_text)
 
-    w_sents = split_sentences_smart(writer_text)
-    e_sents = split_sentences_smart(editor_text)
+    old_tokens = _tokenize_all_text_changes(writer_text)
+    new_tokens = _tokenize_all_text_changes(editor_text)
 
-    w_keys = [normalize_for_compare(x) for x in w_sents]
-    e_keys = [normalize_for_compare(x) for x in e_sents]
+    old_keys = [_strict_token_key(t) for t in old_tokens]
+    new_keys = [_strict_token_key(t) for t in new_tokens]
 
-    sm = difflib.SequenceMatcher(None, w_keys, e_keys, autojunk=False)
+    sm = difflib.SequenceMatcher(None, old_keys, new_keys, autojunk=False)
     changes = []
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             continue
-        original = sanitize_diff_side(" ".join(w_sents[i1:i2]).strip())
-        revised = sanitize_diff_side(" ".join(e_sents[j1:j2]).strip())
+
+        original = sanitize_diff_side(_join_tokens_readable(old_tokens[i1:i2]))
+        revised = sanitize_diff_side(_join_tokens_readable(new_tokens[j1:j2]))
+
         if not original and not revised:
             continue
         if _looks_like_comment_artifact(original, revised):
-            # Exported Google Docs comment text must never be counted as a silent edit.
             continue
-        # If the only thing left on one side was a comment artifact, do not create
-        # a fake delete/insert edit from comment cleanup.
-        if not original or not revised:
+
+        # Keep insert-only and delete-only changes. The older code skipped these,
+        # which caused missing words/phrases to disappear from the report.
+        old_norm = _strict_token_key(original)
+        new_norm = _strict_token_key(revised)
+        if old_norm == new_norm:
             continue
-        if looks_like_formatting_only(original, revised):
-            # Formatting-only/tashkeel-only changes are kept only if meaningful enough.
-            continue
-        sim = round(token_similarity(original, revised), 3)
+
+        original_context = _token_context(old_tokens, i1, i2)
+        revised_context = _token_context(new_tokens, j1, j2)
+
         changes.append({
             "tag": tag,  # replace / delete / insert
             "original": original[:700],
             "revised": revised[:700],
-            "similarity": sim,
+            "original_context": original_context[:700],
+            "revised_context": revised_context[:700],
+            "similarity": round(token_similarity(original, revised), 3),
             "word_delta": len(revised.split()) - len(original.split()),
+            "micro_edit": True,
         })
 
     return changes
 
-
 def _tokenize_for_micro_diff(text):
-    """Tokenize Arabic/English text for micro silent-edit detection."""
-    text = str(text or "")
-    # Keep words/numbers as tokens and keep punctuation only as separators.
-    # Arabic range + English letters + numbers. This intentionally ignores punctuation-only edits.
-    return re.findall(r"[\u0600-\u06FFA-Za-z0-9]+(?:[-_/][\u0600-\u06FFA-Za-z0-9]+)*", text)
+    """Tokenize Arabic/English text for micro silent-edit detection, including punctuation."""
+    return _tokenize_all_text_changes(text)
 
 
 def _micro_context(tokens, start, end, window=5):
@@ -596,8 +643,8 @@ def _explode_change_to_micro_edits(change, lang):
     if not old_tokens or not new_tokens:
         return [change]
 
-    old_norm = [normalize_for_compare(t) for t in old_tokens]
-    new_norm = [normalize_for_compare(t) for t in new_tokens]
+    old_norm = [_strict_token_key(t) for t in old_tokens]
+    new_norm = [_strict_token_key(t) for t in new_tokens]
 
     sm = difflib.SequenceMatcher(None, old_norm, new_norm, autojunk=False)
 
@@ -616,8 +663,8 @@ def _explode_change_to_micro_edits(change, lang):
         if looks_like_formatting_only(old_part, new_part):
             continue
 
-        old_clean = normalize_for_compare(old_part)
-        new_clean = normalize_for_compare(new_part)
+        old_clean = _strict_token_key(old_part)
+        new_clean = _strict_token_key(new_part)
 
         if not old_clean and not new_clean:
             continue
@@ -750,8 +797,15 @@ Every change must be classified. Use one of: {allowed}.
                     ctype = "rephrase"
                 if ctype == "formatting":
                     ctype = "grammar"
+
+                fallback_type = fallback_diff_type(ch, lang)
                 if ctype not in COMMENT_WEIGHTS:
-                    ctype = fallback_diff_type(ch, lang)
+                    ctype = fallback_type
+                # Safety override: factual/entity/number changes should never be softened
+                # into rephrase or grammar if the deterministic fallback catches them.
+                if ctype in LOW_IMPACT_EDIT_TYPES and fallback_type in HIGH_IMPACT_EDIT_TYPES:
+                    ctype = fallback_type
+
                 w = COMMENT_WEIGHTS[ctype]
                 severity = info.get("severity") or ("high" if ctype in HIGH_IMPACT_EDIT_TYPES else "low" if ctype in LOW_IMPACT_EDIT_TYPES else "medium")
                 classified.append({
@@ -816,11 +870,72 @@ def _looks_like_comment_artifact(original, revised):
 
     return False
 
+
+def _norm_fact_text(value):
+    """Normalized text used only for factual/entity-change fallback detection."""
+    return normalize_for_compare(value or "")
+
+
+def _has_any_fact_keyword(value):
+    value = _norm_fact_text(value)
+    keywords = [
+        # English factual fields
+        "location", "located", "area", "city", "emirate", "developer", "price", "handover",
+        "payment", "payment plan", "unit", "units", "bedroom", "bedrooms", "project", "community",
+        # Arabic factual fields
+        "الموقع", "يقع", "تقع", "منطقه", "المنطقه", "اماره", "الاماره", "المطور", "العقاري",
+        "العقاريه", "السعر", "السداد", "خطة", "خطه", "الدفع", "التسليم", "موعد", "الوحدات",
+        "وحده", "غرف", "غرفه", "المشروع", "مجمع", "حي", "دائره", "اراضي", "الاملاك",
+    ]
+    return any(k in value for k in keywords)
+
+
+def _known_place_or_entity_changed(original, revised, ch=None):
+    """
+    Strong fallback guard: location/developer/place/entity changes must be factual,
+    even when the AI classifier is unavailable or returns a low-impact rephrase.
+    Uses micro-edit context so changes like الجنوب -> مارينا are still caught.
+    """
+    ch = ch or {}
+    old_full = _norm_fact_text(f"{original} {ch.get('original_context','')}")
+    new_full = _norm_fact_text(f"{revised} {ch.get('revised_context','')}")
+    old_part = _norm_fact_text(original)
+    new_part = _norm_fact_text(revised)
+
+    # Known UAE place/project-location terms common in Bayut/Dubizzle QA.
+    place_terms = [
+        "دبي الجنوب", "دبي مارينا", "ابوظبي", "ابو ظبي", "الشارقه", "عجمان", "دبي هيلز",
+        "قرية جميرا الدائريه", "قريه جميرا الدائريه", "نخلة جميرا", "نخله جميرا", "داون تاون دبي",
+        "ميدان", "جبل علي", "دبي لاند", "الفرجان", "الخليج التجاري",
+        "dubai south", "dubai marina", "abu dhabi", "sharjah", "ajman", "jvc", "palm jumeirah",
+        "downtown dubai", "business bay", "jebel ali", "dubai hills", "meydan",
+    ]
+
+    old_places = {t for t in place_terms if t in old_full or t in old_part}
+    new_places = {t for t in place_terms if t in new_full or t in new_part}
+    if old_places and new_places and old_places != new_places:
+        return True
+
+    # Micro edits often only show the changed second word: الجنوب -> مارينا.
+    # Treat this as factual when the surrounding context is a location/developer/project field.
+    old_token_marks = ["الجنوب", "مارينا", "ابوظبي", "الشارقه", "عجمان", "ميدان", "الفرجان"]
+    new_token_marks = old_token_marks
+    if any(t in old_part for t in old_token_marks) and any(t in new_part for t in new_token_marks):
+        if old_part != new_part and (_has_any_fact_keyword(old_full) or _has_any_fact_keyword(new_full) or "دبي" in old_full + new_full):
+            return True
+
+    # Developer/company entity changes.
+    if ("المطور" in old_full + new_full or "العقاري" in old_full + new_full or "developer" in old_full + new_full):
+        if old_part != new_part and len(old_part + new_part) >= 4:
+            return True
+
+    return False
+
 def fallback_diff_type(ch, lang):
     original = ch.get("original", "") or ""
     revised = ch.get("revised", "") or ""
     tag = ch.get("tag", "")
-    both = f"{original} {revised}".lower()
+    both = f"{original} {revised} {ch.get('original_context', '')} {ch.get('revised_context', '')}".lower()
     ar = re.search(r"[\u0600-\u06FF]", both) is not None
     sim = ch.get("similarity")
     try:
@@ -833,14 +948,21 @@ def fallback_diff_type(ch, lang):
 
     source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي", "url", "http"]
     hard_fact_keywords = [
-        "aed", "price", "handover", "payment", "floor", "floors", "sqft", "sq ft",
+        "aed", "price", "handover", "payment", "payment plan", "floor", "floors", "sqft", "sq ft",
         "school", "clinic", "hospital", "metro", "mall", "airport", "minutes", "drive",
-        "درهم", "السعر", "أسعار", "تسليم", "الدفع", "طابق", "قدم", "مربع",
-        "مدرسة", "عيادة", "مستشفى", "مترو", "مول", "مطار", "دقيقة", "بالسيارة"
+        "location", "located", "area", "city", "emirate", "developer", "unit", "units", "project",
+        "درهم", "السعر", "أسعار", "تسليم", "التسليم", "موعد", "الدفع", "السداد", "خطة", "خطه",
+        "طابق", "قدم", "مربع", "الموقع", "يقع", "تقع", "منطقة", "منطقه", "المطور", "العقاري",
+        "وحدة", "وحده", "الوحدات", "المشروع", "مدرسة", "عيادة", "مستشفى", "مترو", "مول", "مطار", "دقيقة", "بالسيارة"
     ]
 
     # Arabic edits are usually translation/phrasing unless a measurable/source-backed fact changes.
     if ar or lang == "Arabic":
+        factual_context = f"{original} {revised} {ch.get('original_context','')} {ch.get('revised_context','')}".lower()
+        if _known_place_or_entity_changed(original, revised, ch):
+            return "factual"
+        if _number_sets_differ(original, revised) and any(k in factual_context for k in hard_fact_keywords):
+            return "factual"
         if tag == "delete" and len(original.split()) >= 8:
             if any(k in both for k in source_keywords):
                 return "wrong_info_removed"
@@ -859,7 +981,7 @@ def fallback_diff_type(ch, lang):
             return "source_alignment"
 
         # Only mark factual when numbers or clearly measurable details changed.
-        if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
+        if _number_sets_differ(original, revised) and any(k in factual_context for k in hard_fact_keywords):
             return "factual"
 
         if sim >= 0.82:
@@ -871,10 +993,11 @@ def fallback_diff_type(ch, lang):
         return "rephrase"
 
     fact_keywords = [
-        "aed", "price", "handover", "developer", "location", "bedroom", "studio",
-        "sqft", "sq ft", "payment", "floor", "floors", "amenity", "amenities",
-        "dld", "rera", "unit", "units", "villa", "apartment"
+        "aed", "price", "handover", "developer", "location", "located", "area", "city", "emirate",
+        "bedroom", "studio", "sqft", "sq ft", "payment", "payment plan", "floor", "floors",
+        "amenity", "amenities", "dld", "rera", "unit", "units", "villa", "apartment", "project"
     ]
+    factual_context = f"{original} {revised} {ch.get('original_context','')} {ch.get('revised_context','')}".lower()
 
     if tag == "delete" and len(original.split()) >= 6:
         if any(k in both for k in fact_keywords + source_keywords):
@@ -886,7 +1009,7 @@ def fallback_diff_type(ch, lang):
         return "rephrase" if len(revised.split()) > 18 else "rephrase"
     if any(k in both for k in source_keywords) and sim < 0.92:
         return "source_alignment"
-    if any(k in both for k in fact_keywords) and sim < 0.88:
+    if any(k in factual_context for k in fact_keywords) and (sim < 0.88 or _number_sets_differ(original, revised)):
         return "factual"
     if sim >= 0.90:
         return "grammar"
@@ -2107,6 +2230,31 @@ def page_gdoc_submit():
                                         label_visibility="collapsed")
                 st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
+                st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
+                comparison_source = st.selectbox(
+                    "Comparison source",
+                    [
+                        "Google Doc current text vs pasted Airtable/editor copy",
+                        "Google Doc revision history",
+                    ],
+                    index=0,
+                    help="Choose Airtable/editor paste when the edited copy is outside Google Docs revision history. This is the correct mode for Faten copy vs Airtable copy."
+                )
+                st.caption(
+                    "Selected mode: " + (
+                        "Google Doc current text will be compared with the pasted Airtable/editor copy."
+                        if comparison_source == "Google Doc current text vs pasted Airtable/editor copy"
+                        else "The app will compare the last writer revision with the last editor revision inside Google Docs."
+                    )
+                )
+                airtable_editor_copy = ""
+                if comparison_source == "Google Doc current text vs pasted Airtable/editor copy":
+                    airtable_editor_copy = st.text_area(
+                        "Paste Airtable/editor copy",
+                        height=260,
+                        placeholder="Paste the Airtable/editor version here. The current Google Doc text will be treated as the writer/Faten copy."
+                    )
+
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
                 # writer's latest available version vs editor's latest available version.
@@ -2131,13 +2279,15 @@ def page_gdoc_submit():
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Selected comparison scored</div><div class="timeline-sub">For Airtable copy, paste the edited version and the app compares it against the current Google Doc text.</div></div></div>
 </div>
 <div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
         st.error("Please fill in writer name and Google Doc URL."); return
+    if comparison_source == "Google Doc current text vs pasted Airtable/editor copy" and not airtable_editor_copy.strip():
+        st.error("You selected Airtable/editor comparison, but the Airtable/editor copy box is empty. Paste the edited Airtable copy, then run again. The app cannot compare Airtable changes from the Google Doc link alone."); return
 
     with st.spinner("Fetching Google Doc…"):
         parsed, err = fetch_google_doc(doc_url)
@@ -2184,42 +2334,71 @@ def page_gdoc_submit():
     writer_rev = None
     editor_rev = None
 
-    # Required silent edit logic: compare ONLY the writer's last saved version
-    # with the editor's last saved version, then score the actual text changes.
-    # No revision-by-revision fallback, no autosave counting, no manual sidebar count.
+    # Required silent edit logic:
+    # 1) Google Doc revision mode: compare writer's last saved version vs editor's last saved version.
+    # 2) Airtable/manual mode: compare current Google Doc text vs pasted Airtable/editor copy.
     handoff_status = "not_run"
-    if parsed.get("revisions"):
-        prog.progress(50, text="Comparing latest writer version vs latest editor version…")
-        handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
-            parsed["drive_svc"], parsed["svc_creds"],
-            extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
-        )
-        writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
-        if handoff_writer_text and handoff_editor_text:
-            diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
-            if should_use_arabic_micro_edits(diff_changes, lang):
-                diff_changes = _split_arabic_large_changes(diff_changes)
-                diff_changes = explode_changes_to_micro_edits(diff_changes, "Arabic")
-                diff_changes = _dedupe_diff_changes(diff_changes)
-            if diff_changes:
-                prog.progress(60, text="Classifying and scoring editor handoff edits…")
-                diff_classified = classify_diff_changes(
-                    diff_changes,
-                    platform,
-                    effective_diff_language(diff_changes, lang),
-                )
+    comparison_mode = comparison_source
+
+    if comparison_source == "Google Doc current text vs pasted Airtable/editor copy":
+        prog.progress(50, text="Comparing Google Doc copy vs Airtable/editor copy…")
+        diff_source = "manual_google_doc_vs_airtable_editor_copy"
+        revision_activity_source = "manual_airtable_comparison"
+        editor_rounds = 0
+        writer_rev = None
+        editor_rev = None
+        handoff_status = "manual_airtable_comparison"
+        diff_changes = compute_diff(parsed["text"], airtable_editor_copy)
+        if should_use_arabic_micro_edits(diff_changes, lang):
+            diff_changes = _split_arabic_large_changes(diff_changes)
+            diff_changes = explode_changes_to_micro_edits(diff_changes, "Arabic")
+            # Do not dedupe: user wants every change between writer and editor versions.
+        if diff_changes:
+            prog.progress(60, text="Classifying and scoring Airtable/editor changes…")
+            diff_classified = classify_diff_changes(
+                diff_changes,
+                platform,
+                effective_diff_language(diff_changes, lang),
+            )
+        else:
+            diff_classified = []
+
+    else:
+        # Google Doc revision-history mode. No revision-by-revision fallback, no autosave counting.
+        if parsed.get("revisions"):
+            prog.progress(50, text="Comparing latest writer version vs latest editor version…")
+            handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
+                parsed["drive_svc"], parsed["svc_creds"],
+                extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
+            )
+            writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
+            if handoff_writer_text and handoff_editor_text:
+                diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
+                if should_use_arabic_micro_edits(diff_changes, lang):
+                    diff_changes = _split_arabic_large_changes(diff_changes)
+                    diff_changes = explode_changes_to_micro_edits(diff_changes, "Arabic")
+                    # Do not dedupe: user wants every change between writer and editor versions.
+                if diff_changes:
+                    prog.progress(60, text="Classifying and scoring editor handoff edits…")
+                    diff_classified = classify_diff_changes(
+                        diff_changes,
+                        platform,
+                        effective_diff_language(diff_changes, lang),
+                    )
+                else:
+                    diff_classified = []
             else:
                 diff_classified = []
         else:
-            diff_classified = []
-    else:
-        handoff_status = "not_enough_revisions"
+            handoff_status = "not_enough_revisions"
 
-    if not diff_classified and handoff_status != "editor_handoff":
-        st.warning(
-            "Could not compare the latest writer version with the latest editor version. "
-            "Check that the writer/editor names match the Google Docs version history and that the document is shared with the service account as Editor."
-        )
+        if not diff_classified and handoff_status != "editor_handoff":
+            st.error(
+                "Comparison unavailable — the app could not compare the latest writer version with the latest editor version. "
+                "No score was generated because giving 100% without a valid comparison would be misleading. "
+                "Use the Airtable/editor paste comparison mode if the edited copy is outside Google Docs revision history."
+            )
+            return
 
     prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
@@ -2254,6 +2433,7 @@ def page_gdoc_submit():
         "diff_classified": diff_classified,
         "diff_source":     diff_source,
         "silent_compare_mode": silent_compare_mode,
+        "comparison_mode":   comparison_mode,
         "handoff_status":   locals().get("handoff_status", "not_run"),
         "revision_activity_count": len(revision_activity_events),
         "revision_activity_source": revision_activity_source,
@@ -2415,8 +2595,14 @@ def render_gdoc_report(sub):
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
         is_handoff = sub.get("diff_source") == "editor_handoff_last_writer_vs_last_editor"
-        mode_label = "Editor edits to writer's last version" if is_handoff else "Silent editor activity"
-        if is_handoff:
+        is_airtable = sub.get("diff_source") == "manual_google_doc_vs_airtable_editor_copy"
+        if is_airtable:
+            mode_label = "Airtable/editor copy vs Google Doc copy"
+        elif is_handoff:
+            mode_label = "Editor edits to writer's last version"
+        else:
+            mode_label = "Silent editor activity"
+        if is_handoff or is_airtable:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
             st.markdown(f"#### {mode_label} — {activity_count or event_count} {count_label} · {text_change_count} text changes found")
@@ -2445,7 +2631,10 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits — {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
+            if sub.get("diff_source") == "manual_google_doc_vs_airtable_editor_copy":
+                st.caption("These are the actual text differences between the current Google Doc copy and the pasted Airtable/editor copy. The system may count several small changes inside one paragraph as separate edits.")
+            else:
+                st.caption("These are all detected text changes between the writer's latest version and the editor's latest version, including small word/phrase changes, insertions, deletions and factual value changes.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
@@ -2520,7 +2709,8 @@ def render_gdoc_report(sub):
 
     if sub.get("doc_url"):
         st.markdown(f"[🔗 Open original Google Doc]({sub['doc_url']})")
-    st.caption(f"Content QA System — {sub['platform']} — Google Doc mode — {sub['date']}")
+    mode_footer = "Airtable comparison mode" if sub.get("diff_source") == "manual_google_doc_vs_airtable_editor_copy" else "Google Doc mode"
+    st.caption(f"Content QA System — {sub['platform']} — {mode_footer} — {sub['date']}")
 
 # ── File upload report ─────────────────────────────────────────────────────
 def render_report(sub):
