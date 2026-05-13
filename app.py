@@ -2184,14 +2184,21 @@ def page_gdoc_submit():
                 st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
                 st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
-                comparison_source = st.radio(
+                comparison_source = st.selectbox(
                     "Comparison source",
                     [
-                        "Google Doc revision history",
                         "Google Doc current text vs pasted Airtable/editor copy",
+                        "Google Doc revision history",
                     ],
-                    horizontal=False,
-                    help="Use Airtable/editor copy when the edited text is outside the Google Doc revision history."
+                    index=0,
+                    help="Choose Airtable/editor paste when the edited copy is outside Google Docs revision history. This is the correct mode for Faten copy vs Airtable copy."
+                )
+                st.caption(
+                    "Selected mode: " + (
+                        "Google Doc current text will be compared with the pasted Airtable/editor copy."
+                        if comparison_source == "Google Doc current text vs pasted Airtable/editor copy"
+                        else "The app will compare the last writer revision with the last editor revision inside Google Docs."
+                    )
                 )
                 airtable_editor_copy = ""
                 if comparison_source == "Google Doc current text vs pasted Airtable/editor copy":
@@ -2225,7 +2232,7 @@ def page_gdoc_submit():
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Selected comparison scored</div><div class="timeline-sub">For Airtable copy, paste the edited version and the app compares it against the current Google Doc text.</div></div></div>
 </div>
 <div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
 
@@ -2233,7 +2240,7 @@ def page_gdoc_submit():
     if not writer or not doc_url:
         st.error("Please fill in writer name and Google Doc URL."); return
     if comparison_source == "Google Doc current text vs pasted Airtable/editor copy" and not airtable_editor_copy.strip():
-        st.error("Please paste the Airtable/editor copy before running the comparison."); return
+        st.error("You selected Airtable/editor comparison, but the Airtable/editor copy box is empty. Paste the edited Airtable copy, then run again. The app cannot compare Airtable changes from the Google Doc link alone."); return
 
     with st.spinner("Fetching Google Doc…"):
         parsed, err = fetch_google_doc(doc_url)
