@@ -319,6 +319,95 @@ def extract_doc_id(url):
     m = re.search(r'/document/d/([a-zA-Z0-9-_]+)', url)
     return m.group(1) if m else None
 
+
+
+def get_allowed_google_doc_domains():
+    """
+    Allowed company Google domains for Google Doc submissions.
+    Optional Streamlit secret:
+    ALLOWED_GOOGLE_DOC_DOMAINS = "dubizzle.com,bayut.com,dubizzlegroup.com"
+    """
+    defaults = ["dubizzle.com", "bayut.com", "dubizzlegroup.com"]
+    try:
+        raw = st.secrets.get("ALLOWED_GOOGLE_DOC_DOMAINS", "")
+        custom = [d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()]
+        return custom or defaults
+    except Exception:
+        return defaults
+
+
+def _email_domain(email):
+    email = str(email or "").strip().lower()
+    if "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[-1]
+
+
+def is_allowed_company_email(email):
+    domain = _email_domain(email)
+    allowed_domains = get_allowed_google_doc_domains()
+    return bool(domain) and domain in allowed_domains
+
+
+def validate_dubizzle_group_google_doc(drive_svc, doc_id):
+    """
+    Security gate for Google Doc submissions.
+    Allows only company-owned/company-domain Google Docs and blocks public links.
+    """
+    allowed_domains = get_allowed_google_doc_domains()
+
+    try:
+        meta = drive_svc.files().get(
+            fileId=doc_id,
+            fields=(
+                "id,name,mimeType,ownedByMe,owners(displayName,emailAddress),"
+                "permissions(id,type,role,emailAddress,domain,allowFileDiscovery)"
+            ),
+            supportsAllDrives=True,
+        ).execute()
+    except Exception as e:
+        return False, f"Could not verify document access/security: {e}"
+
+    if meta.get("mimeType") != "application/vnd.google-apps.document":
+        return False, "Only Google Docs files are accepted. Please submit a Google Doc link."
+
+    permissions = meta.get("permissions", []) or []
+    owners = meta.get("owners", []) or []
+
+    # 1) Block public docs: Anyone with the link / public web sharing.
+    for p in permissions:
+        if p.get("type") == "anyone":
+            return False, "Public Google Docs are not allowed. Change sharing from 'Anyone with the link' to Dubizzle Group restricted access."
+
+    # 2) Reject domain sharing outside approved company domains.
+    for p in permissions:
+        if p.get("type") == "domain":
+            domain = str(p.get("domain") or "").strip().lower()
+            if domain and domain not in allowed_domains:
+                return False, f"This document is shared with an unapproved domain: {domain}. Allowed domains: {', '.join(allowed_domains)}."
+
+    # 3) Require company ownership where owner email is visible.
+    owner_emails = [o.get("emailAddress", "") for o in owners if o.get("emailAddress")]
+    if owner_emails:
+        if not any(is_allowed_company_email(email) for email in owner_emails):
+            return False, "This file is not owned by an approved Dubizzle Group/Bayut account. Please use a company Google account document."
+        return True, ""
+
+    # 4) Shared drives can hide owners. In that case, allow only if a company-domain permission exists.
+    company_domain_permission = any(
+        p.get("type") == "domain" and str(p.get("domain") or "").strip().lower() in allowed_domains
+        for p in permissions
+    )
+    company_user_permission = any(
+        p.get("type") == "user" and is_allowed_company_email(p.get("emailAddress", ""))
+        for p in permissions
+    )
+
+    if company_domain_permission or company_user_permission:
+        return True, ""
+
+    return False, "Could not confirm this is a Dubizzle Group document. Please use a company-owned Google Doc or share it only with the approved company domain."
+
 def export_revision_text(drive_svc, creds, doc_id, revision_id):
     """Export a specific revision as plain text."""
     try:
@@ -1469,7 +1558,7 @@ def extract_suggestions_from_doc(doc):
     return suggestions
 
 def fetch_google_doc(url):
-    """Fetch content, comments, suggestions, and revision history from a Google Doc."""
+    """Fetch content, comments, suggestions, and revision history from an approved company Google Doc."""
     doc_id = extract_doc_id(url)
     if not doc_id:
         return None, "Invalid Google Doc URL"
@@ -1478,6 +1567,13 @@ def fetch_google_doc(url):
         docs_svc, drive_svc, svc_creds = get_google_services()
     except Exception as e:
         return None, f"Google auth error: {e}"
+
+    # ── Dubizzle Group / Bayut access gate ─────────────────────────────────
+    # This blocks public "anyone with the link" docs and personal Gmail docs
+    # before the app reads/scans/scoring the content.
+    allowed, validation_error = validate_dubizzle_group_google_doc(drive_svc, doc_id)
+    if not allowed:
+        return None, validation_error
 
     try:
         doc   = docs_svc.documents().get(documentId=doc_id).execute()
@@ -2105,7 +2201,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
+                st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Only Dubizzle Group/Bayut Google Docs are accepted. Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -2133,7 +2229,7 @@ def page_gdoc_submit():
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a Dubizzle Group/Bayut Google Doc only. Public “Anyone with the link” and personal Gmail docs will be rejected. Share the doc with the service account as Editor for revision export.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
