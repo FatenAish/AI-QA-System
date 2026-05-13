@@ -61,19 +61,21 @@ GRADE_MAP = [
 # Silent edits are intentionally more detailed than comments so the system can
 # separate harmless wording cleanup from factual corrections and source fixes.
 COMMENT_WEIGHTS = {
-    "factual":            {"label": "Factual correction",        "deduction": 3.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "wrong_info_removed": {"label": "Wrong info removed",        "deduction": 2.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "source_alignment":   {"label": "Source alignment",          "deduction": 3.0, "color": "#fee2e2", "tc": "#991b1b"},
-    "contradiction_fixed": {"label": "Contradiction fixed",      "deduction": 3.0, "color": "#fee2e2", "tc": "#991b1b"},
+    "factual":            {"label": "Factual correction",        "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "wrong_info_removed": {"label": "Wrong info removed",        "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "source_alignment":   {"label": "Source alignment",          "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
+    "contradiction_fixed": {"label": "Contradiction fixed",      "deduction": 1.5, "color": "#fee2e2", "tc": "#991b1b"},
     "missing":            {"label": "Missing critical info",     "deduction": 1.5, "color": "#fef3c7", "tc": "#92400e"},
     "missing_info_added": {"label": "Missing info added",        "deduction": 1.2, "color": "#fef3c7", "tc": "#92400e"},
     "structural":         {"label": "Structural rewrite",        "deduction": 1.2, "color": "#fde8d8", "tc": "#9a3412"},
+    "brand_voice":        {"label": "Brand voice / tone",        "deduction": 1.0, "color": "#ede9fe", "tc": "#5b21b6"},
     "arabic_language":    {"label": "Arabic language correction", "deduction": 0.6, "color": "#e0f2fe", "tc": "#075985"},
     "grammar":            {"label": "Grammar / phrasing",        "deduction": 0.5, "color": "#f0f4ff", "tc": "#2D4A8A"},
     "rephrase":           {"label": "Rephrase only",             "deduction": 0.3, "color": "#f1f5f9", "tc": "#475569"},
+    "formatting":         {"label": "Formatting / punctuation",  "deduction": 0.1, "color": "#f8fafc", "tc": "#64748b"},
 }
 
-LOW_IMPACT_EDIT_TYPES = {"rephrase", "grammar", "arabic_language"}
+LOW_IMPACT_EDIT_TYPES = {"formatting", "rephrase", "grammar", "arabic_language"}
 HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
 EVENT_ONLY_EDIT_TYPES = {"revision_event"}
 REVISION_ROUND_PENALTY = 0.7  # per extra round
@@ -690,7 +692,7 @@ def classify_diff_changes(changes, platform, lang):
 
     arabic_rules = """
 Arabic-specific rules:
-- Treat tashkeel, hamza style, punctuation, spacing, and light صياغة changes as grammar/arabic_language unless the meaning changed.
+- Treat tashkeel, hamza style, punctuation, spacing, and light صياغة changes as grammar/arabic_language/formatting unless the meaning changed.
 - If Arabic wording changes a real entity, location, developer, unit type, price, area, number, handover date, amenity, payment plan, road name, or source-backed detail, classify it as factual/source_alignment.
 - If the editor deletes unsupported Arabic information, classify it as wrong_info_removed.
 - If the editor adds a required source-backed detail, classify it as missing_info_added.
@@ -701,9 +703,11 @@ Arabic-specific rules:
 An editor silently changed a writer's article without comments. Classify each change by WHY the editor likely made it.
 
 Use ONLY these type values:
+- "formatting" → punctuation, spacing, capitalization, tashkeel-only, no meaning change
 - "grammar" → grammar/spelling/minor phrasing, no factual meaning change
 - "arabic_language" → Arabic grammar, إملاء, صياغة, علامات ترقيم, no factual meaning change
 - "rephrase" → same facts, same meaning, smoother sentence
+- "brand_voice" → tone/platform voice improved, less generic, better marketing wording
 - "structural" → section moved, heading fixed, paragraph reorganized, large rewrite without clear fact correction
 - "missing_info_added" → editor added important/source-based info writer missed
 - "missing" → same as missing_info_added when the edit clearly adds required info
@@ -719,7 +723,7 @@ Important:
 - If old and new facts are the same, use grammar/rephrase/arabic_language.
 - If the fact changed or wrong info was removed, use factual/wrong_info_removed/source_alignment.
 - For delete-only changes, decide whether it is wrong_info_removed, structural, or rephrase cleanup.
-- For insert-only changes, decide whether it is missing_info_added, rephrase, structural, or grammar.
+- For insert-only changes, decide whether it is missing_info_added, brand_voice, or grammar.
 
 Changes:
 {items}
@@ -746,10 +750,6 @@ Every change must be classified. Use one of: {allowed}.
             for i, ch in enumerate(changes, 1):
                 info = cls_map.get(i, {})
                 ctype = str(info.get("type", "grammar")).strip()
-                if ctype == "brand_voice":
-                    ctype = "rephrase"
-                if ctype == "formatting":
-                    ctype = "grammar"
                 if ctype not in COMMENT_WEIGHTS:
                     ctype = fallback_diff_type(ch, lang)
                 w = COMMENT_WEIGHTS[ctype]
@@ -829,7 +829,7 @@ def fallback_diff_type(ch, lang):
         sim = token_similarity(original, revised)
 
     if _looks_like_comment_artifact(original, revised):
-        return "grammar"
+        return "formatting"
 
     source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي", "url", "http"]
     hard_fact_keywords = [
@@ -853,7 +853,7 @@ def fallback_diff_type(ch, lang):
                 return "missing_info_added"
             if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
                 return "missing_info_added"
-            return "rephrase" if len(revised.split()) < 25 else "rephrase"
+            return "rephrase" if len(revised.split()) < 25 else "brand_voice"
 
         if any(k in both for k in source_keywords) and sim < 0.90:
             return "source_alignment"
@@ -883,7 +883,7 @@ def fallback_diff_type(ch, lang):
     if tag == "insert" and len(revised.split()) >= 6:
         if any(k in both for k in fact_keywords + source_keywords):
             return "missing_info_added"
-        return "rephrase" if len(revised.split()) > 18 else "rephrase"
+        return "brand_voice" if len(revised.split()) > 18 else "rephrase"
     if any(k in both for k in source_keywords) and sim < 0.92:
         return "source_alignment"
     if any(k in both for k in fact_keywords) and sim < 0.88:
@@ -1630,6 +1630,7 @@ Classify each editor comment into exactly one type:
 - "factual"     → Wrong data, incorrect facts, wrong names/prices/dates/locations
 - "missing"     → Missing critical information that must be added
 - "structural"  → Section needs rewriting, wrong structure, copied from source
+- "brand_voice" → Tone/style issues, too generic, not platform voice
 - "grammar"     → Grammar, phrasing, minor wording fixes
 
 Comments:
@@ -1689,7 +1690,7 @@ Rules:
                                      "wrong section","wrong place","belongs","move this","header"]):
             ctype = "structural"
         elif any(k in low for k in ["brand","tone","style","voice","too general","sounds","generic"]):
-            ctype = "rephrase"
+            ctype = "brand_voice"
         else:
             ctype = "grammar"
         w = COMMENT_WEIGHTS[ctype]
@@ -1957,12 +1958,14 @@ def sidebar():
         st.markdown("""
 | Rule | Pts |
 |---|---:|
-| Factual/source correction | −3 |
-| Wrong info removed | −2 |
+| Factual/source correction | −1.5 |
+| Wrong info removed | −1.5 |
 | Missing info added | −1.2 to −1.5 |
 | Structural rewrite | −1.2 |
+| Brand voice / tone | −1 |
 | Arabic/grammar fix | −0.5 to −0.6 |
 | Rephrase only | −0.3 |
+| Formatting only | −0.1 |
 | Extra revision round | −0.7 |
 """)
         st.markdown(
@@ -2130,7 +2133,7 @@ def page_gdoc_submit():
         st.markdown("""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −2 · Missing −1.5/−2 · Rephrase −0.5</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
 </div>
 <div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the Google Doc with the service account. Editor access is better for revision export; Viewer can still read content/comments.</div></div>""", unsafe_allow_html=True)
@@ -2313,7 +2316,7 @@ def _edit_report_title(d, idx):
     if typ == "grammar":
         return f"{idx}. Grammar / phrasing edit"
     if typ == "formatting":
-        return f"{idx}. Grammar/phrasing edit"
+        return f"{idx}. Formatting edit"
     return f"{idx}. {label}"
 
 
@@ -2378,9 +2381,9 @@ def render_gdoc_report(sub):
         row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
         diff_rows += brow(row_cls, f'Silent edits — {w["label"]} ({len(items)} found)', f'−{round(raw_tot,1)} raw')
     if diff_summary.get("low_count", 0) and not diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
+        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
     elif diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
+        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
 
@@ -2433,7 +2436,7 @@ def render_gdoc_report(sub):
         elif diff_summary.get("low_count", 0):
             st.info(
                 f"Low-impact edits are not capped: all "
-                f"{diff_summary.get('low_count')} grammar/rephrase edits were counted "
+                f"{diff_summary.get('low_count')} grammar/rephrase/formatting edits were counted "
                 f"for −{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts."
             )
 
