@@ -5,7 +5,7 @@ import os
 import urllib.request
 from datetime import datetime
 from io import BytesIO
-import diffliba
+import difflib
 import html
 
 try:
