@@ -383,9 +383,9 @@ def get_allowed_google_doc_domains():
     """
     Allowed company Google domains for Google Doc submissions.
     Optional Streamlit secret:
-    ALLOWED_GOOGLE_DOC_DOMAINS = "dubizzle.com,bayut.com,dubizzlegroup.com"
+    ALLOWED_GOOGLE_DOC_DOMAINS = "dubizzle.com,bayut.com,dubizzlegroup.com,bayut.jo"
     """
-    defaults = ["dubizzle.com", "bayut.com", "dubizzlegroup.com"]
+    defaults = ["dubizzle.com", "bayut.com", "dubizzlegroup.com", "bayut.jo"]
     try:
         raw = st.secrets.get("ALLOWED_GOOGLE_DOC_DOMAINS", "")
         custom = [d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()]
@@ -407,10 +407,35 @@ def is_allowed_company_email(email):
     return bool(domain) and domain in allowed_domains
 
 
+def is_content_system_email(email):
+    """Return True when an email is the Content QA service account."""
+    email = str(email or "").strip().lower()
+    allowed = {
+        SERVICE_ACCOUNT_EMAIL.lower(),
+        get_service_account_email().lower(),
+    }
+    try:
+        raw = st.secrets.get("ALLOWED_CONTENT_SYSTEM_EMAILS", "")
+        allowed.update(e.strip().lower() for e in raw.split(",") if e.strip())
+    except Exception:
+        pass
+    return email in allowed
+
+
+def has_content_system_editor_access(permissions):
+    """Allow the doc when the Content QA service account is shared as Editor."""
+    for p in permissions or []:
+        email = str(p.get("emailAddress") or "").strip().lower()
+        role = str(p.get("role") or "").strip().lower()
+        if is_content_system_email(email) and role in {"owner", "organizer", "fileorganizer", "writer"}:
+            return True
+    return False
+
+
 def validate_dubizzle_group_google_doc(drive_svc, doc_id):
     """
     Security gate for Google Doc submissions.
-    Allows only company-owned/company-domain Google Docs and blocks public links.
+    Blocks public docs, but allows private docs shared with the Content QA service account as Editor.
     """
     allowed_domains = get_allowed_google_doc_domains()
 
@@ -437,23 +462,28 @@ def validate_dubizzle_group_google_doc(drive_svc, doc_id):
     # 1) Block public docs: Anyone with the link / public web sharing.
     for p in permissions:
         if p.get("type") == "anyone":
-            return False, "Public Google Docs are not allowed. Change sharing from 'Anyone with the link' to Dubizzle Group restricted access."
+            return False, "Public Google Docs are not allowed. Keep sharing restricted and share the doc with the Content QA service account as Editor."
 
-    # 2) Reject domain sharing outside approved company domains.
+    # 2) Main access rule: allow any private Google Doc shared with the Content QA service account as Editor.
+    # This allows approved content-system submissions even when the owner domain is not Dubizzle/Bayut.
+    if has_content_system_editor_access(permissions):
+        return True, ""
+
+    # 3) Optional company-domain fallback for older company-owned docs.
     for p in permissions:
         if p.get("type") == "domain":
             domain = str(p.get("domain") or "").strip().lower()
             if domain and domain not in allowed_domains:
                 return False, f"This document is shared with an unapproved domain: {domain}. Allowed domains: {', '.join(allowed_domains)}."
 
-    # 3) Require company ownership where owner email is visible.
+    # 4) Company ownership fallback where owner email is visible.
     owner_emails = [o.get("emailAddress", "") for o in owners if o.get("emailAddress")]
     if owner_emails:
         if not any(is_allowed_company_email(email) for email in owner_emails):
-            return False, "This file is not owned by an approved Dubizzle Group/Bayut account. Please use a company Google account document."
+            return False, f"This private doc is accessible, but the Content QA service account is not shared as Editor. Share it with {get_service_account_email()} as Editor and try again."
         return True, ""
 
-    # 4) Shared drives can hide owners. In that case, allow only if a company-domain permission exists.
+    # 5) Shared drives can hide owners. In that case, allow only if a company-domain permission exists.
     company_domain_permission = any(
         p.get("type") == "domain" and str(p.get("domain") or "").strip().lower() in allowed_domains
         for p in permissions
@@ -466,7 +496,7 @@ def validate_dubizzle_group_google_doc(drive_svc, doc_id):
     if company_domain_permission or company_user_permission:
         return True, ""
 
-    return False, "Could not confirm this is a Dubizzle Group document. Please use a company-owned Google Doc or share it only with the approved company domain."
+    return False, f"Could not confirm access. Keep the doc restricted and share it with {get_service_account_email()} as Editor."
 
 def export_revision_text(drive_svc, creds, doc_id, revision_id):
     """Export a specific revision as plain text."""
@@ -1618,7 +1648,7 @@ def extract_suggestions_from_doc(doc):
     return suggestions
 
 def fetch_google_doc(url):
-    """Fetch content, comments, suggestions, and revision history from an approved company Google Doc."""
+    """Fetch content, comments, suggestions, and revision history from a private Google Doc shared with the Content QA service account."""
     doc_id = extract_doc_id(url)
     if not doc_id:
         return None, "Invalid Google Doc URL"
@@ -1628,7 +1658,7 @@ def fetch_google_doc(url):
     except Exception as e:
         return None, f"Google auth error: {e}"
 
-    # ── Dubizzle Group / Bayut access gate ─────────────────────────────────
+    # ── Google Doc access gate ─────────────────────────────────
     # This blocks public "anyone with the link" docs and personal Gmail docs
     # before the app reads/scans/scoring the content.
     allowed, validation_error = validate_dubizzle_group_google_doc(drive_svc, doc_id)
@@ -2265,7 +2295,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Only Dubizzle Group/Bayut Google Docs are accepted. Share the doc with: <strong>{get_service_account_email()}</strong></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Keep the Google Doc restricted and share it with: <strong>{get_service_account_email()}</strong> as Editor</div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -2293,7 +2323,7 @@ def page_gdoc_submit():
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a Dubizzle Group/Bayut Google Doc only. Public “Anyone with the link” and personal Gmail docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a private/restricted Google Doc. Public “Anyone with the link” docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
