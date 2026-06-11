@@ -836,6 +836,102 @@ def explode_changes_to_micro_edits(changes, lang):
     return exploded
 
 
+def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
+    """
+    Extra safety net for Arabic silent edits.
+
+    Google Docs exports can make the paragraph/sentence matcher miss very small
+    Arabic fixes inside long unchanged sections, for example:
+    "لا يوجد رسوم" -> "لا توجد رسوم".
+
+    This function compares the full writer/exported text against the full
+    editor/exported text at token level and returns every clean word/phrase edit
+    with surrounding context. It is used in addition to the paragraph diff.
+    """
+    writer_text = clean_google_doc_export_artifacts(writer_text)
+    editor_text = clean_google_doc_export_artifacts(editor_text)
+
+    old_tokens = _tokenize_for_micro_diff(writer_text)
+    new_tokens = _tokenize_for_micro_diff(editor_text)
+    if not old_tokens or not new_tokens:
+        return []
+
+    old_norm = [normalize_for_compare(t) for t in old_tokens]
+    new_norm = [normalize_for_compare(t) for t in new_tokens]
+
+    sm = difflib.SequenceMatcher(None, old_norm, new_norm, autojunk=False)
+    edits = []
+
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+
+        old_part = " ".join(old_tokens[i1:i2]).strip()
+        new_part = " ".join(new_tokens[j1:j2]).strip()
+
+        if not old_part and not new_part:
+            continue
+        if _looks_like_comment_artifact(old_part, new_part):
+            continue
+        if looks_like_formatting_only(old_part, new_part):
+            continue
+
+        old_clean = normalize_for_compare(old_part)
+        new_clean = normalize_for_compare(new_part)
+        if not old_clean and not new_clean:
+            continue
+
+        # Avoid noisy one-character artifacts, but keep real Arabic one-word edits.
+        if len(old_clean + new_clean) < 2:
+            continue
+
+        old_ctx = _micro_context(old_tokens, i1, i2, window=7)
+        new_ctx = _micro_context(new_tokens, j1, j2, window=7)
+
+        # Do not count pure context-free punctuation/spacing exports.
+        if not old_ctx and not new_ctx:
+            continue
+
+        edits.append({
+            "tag": op,
+            "original": old_part[:700],
+            "revised": new_part[:700],
+            "original_context": old_ctx[:700],
+            "revised_context": new_ctx[:700],
+            "similarity": round(token_similarity(old_part, new_part), 3),
+            "word_delta": len(new_part.split()) - len(old_part.split()),
+            "micro_edit": True,
+            "document_token_edit": True,
+        })
+
+    return edits
+
+
+def merge_diff_changes(*change_groups):
+    """Merge paragraph-level and document-token-level edits without dropping repeated real edits."""
+    merged = []
+    seen = set()
+    for group in change_groups:
+        for ch in group or []:
+            original = normalize_for_compare(ch.get("original", ""))[:250]
+            revised = normalize_for_compare(ch.get("revised", ""))[:250]
+            old_ctx = normalize_for_compare(ch.get("original_context", ""))[:250]
+            new_ctx = normalize_for_compare(ch.get("revised_context", ""))[:250]
+
+            # For micro edits, context matters. The same correction may happen
+            # several times in different sentences and should be counted each time.
+            if ch.get("micro_edit"):
+                key = (ch.get("tag", ""), original, revised, old_ctx, new_ctx)
+            else:
+                key = (ch.get("tag", ""), original, revised)
+
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(ch)
+    return merged
+
+
 def changes_contain_arabic(changes):
     """Return True when any diff change contains Arabic text, regardless of UI language selection."""
     return any(
@@ -1020,6 +1116,20 @@ def fallback_diff_type(ch, lang):
 
     # Arabic edits are usually translation/phrasing unless a measurable/source-backed fact changes.
     if ar or lang == "Arabic":
+        # Common MSA agreement fixes: non-human plural nouns often take feminine singular verbs/adjectives.
+        # Example: "لا يوجد رسوم" -> "لا توجد رسوم". This is grammar, not rephrasing/factual.
+        arabic_agreement_pairs = [
+            ("يوجد", "توجد"), ("موجود", "موجودة"), ("متاح", "متاحة"),
+            ("يشمل", "تشمل"), ("يضم", "تضم"), ("يكون", "تكون"),
+            ("يعد", "تعد"), ("يعتبر", "تعتبر"),
+        ]
+        old_norm_text = normalize_for_compare(original)
+        new_norm_text = normalize_for_compare(revised)
+        for old_word, new_word in arabic_agreement_pairs:
+            if old_word in old_norm_text.split() and new_word in new_norm_text.split():
+                return "arabic_language"
+            if new_word in old_norm_text.split() and old_word in new_norm_text.split():
+                return "arabic_language"
         if tag == "delete" and len(original.split()) >= 8:
             if any(k in both for k in source_keywords):
                 return "wrong_info_removed"
@@ -1259,15 +1369,22 @@ def _revision_user_matches_editor(revision, editor_name):
 
 
 def _dedupe_diff_changes(changes):
-    """Remove duplicate autosave / repeated revision changes."""
+    """Remove duplicate autosave/repeated changes without losing repeated real micro edits."""
     unique = []
     seen = set()
     for ch in changes or []:
-        key = (
-            ch.get("tag", ""),
-            normalize_for_compare(ch.get("original", ""))[:250],
-            normalize_for_compare(ch.get("revised", ""))[:250],
-        )
+        original = normalize_for_compare(ch.get("original", ""))[:250]
+        revised = normalize_for_compare(ch.get("revised", ""))[:250]
+        if ch.get("micro_edit"):
+            key = (
+                ch.get("tag", ""),
+                original,
+                revised,
+                normalize_for_compare(ch.get("original_context", ""))[:250],
+                normalize_for_compare(ch.get("revised_context", ""))[:250],
+            )
+        else:
+            key = (ch.get("tag", ""), original, revised)
         if key in seen:
             continue
         seen.add(key)
@@ -2476,7 +2593,20 @@ def page_gdoc_submit():
 
         if handoff_writer_text and handoff_editor_text:
             diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
-            if should_use_arabic_micro_edits(diff_changes, lang):
+            if lang == "Arabic" or changes_contain_arabic(diff_changes):
+                # First split paragraph-level Arabic changes into micro edits.
+                paragraph_micro_changes = _split_arabic_large_changes(diff_changes)
+                paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
+
+                # Then run a full-document token diff so tiny edits inside long
+                # paragraphs are not missed, e.g. "لا يوجد رسوم" -> "لا توجد رسوم".
+                document_token_changes = compute_document_level_token_edits(
+                    handoff_writer_text, handoff_editor_text, "Arabic"
+                )
+
+                diff_changes = merge_diff_changes(paragraph_micro_changes, document_token_changes)
+                diff_changes = _dedupe_diff_changes(diff_changes)
+            elif should_use_arabic_micro_edits(diff_changes, lang):
                 diff_changes = _split_arabic_large_changes(diff_changes)
                 diff_changes = explode_changes_to_micro_edits(diff_changes, "Arabic")
                 diff_changes = _dedupe_diff_changes(diff_changes)
