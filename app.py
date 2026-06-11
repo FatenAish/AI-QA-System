@@ -1165,51 +1165,69 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, base_editor_name, f
 
 def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor_name, revisions):
     """
-    Fallback comparison for silent edits.
+    Fallback comparison for silent edits when the writer name is not visible in
+    Google Docs/Drive revision history.
 
-    Why this is needed:
-    Google Docs version history often does not contain the original writer's name.
-    Sometimes the article is pasted/uploaded by the editor, or Drive API only exposes
-    revision rows for the last modifying user. In that case, strict writer-vs-editor
-    matching fails and the app incorrectly returns 100/100.
+    Important:
+    Google Docs may group many tiny edits inside one visible named version
+    (for example "Edit 13 of 29"). The Drive export API usually cannot export
+    every internal edit step. For QA scoring, the safest fallback is therefore
+    NOT "current version vs immediately previous version". That only catches
+    the most recent small save and misses older silent edits.
 
     Fallback order:
-    1) latest revision by selected editor vs the revision immediately before it
-    2) latest revision vs previous revision, regardless of names
-    3) latest revision vs oldest available revision, when only broad snapshots exist
+    1) earliest available revision before the latest selected-editor revision
+       -> latest selected-editor revision
+    2) oldest available revision -> latest available revision
+    3) latest revision -> previous revision only as a last resort
     """
     if not revisions or len(revisions) < 2:
         return None, None, None, None, "not_enough_revisions_for_fallback"
 
     ordered = sorted(revisions, key=_rev_sort_key_global)
 
-    # Prefer the latest revision saved by the selected editor.
+    def _export_pair(base_rev, final_rev, status):
+        if not base_rev or not final_rev or base_rev.get("id") == final_rev.get("id"):
+            return None, None, None, None, f"{status}_same_revision"
+        base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
+        final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
+        if base_text and final_text:
+            return base_text, final_text, base_rev, final_rev, status
+        return None, None, None, None, f"{status}_export_failed"
+
+    # Prefer the latest revision saved by the selected editor as the final version,
+    # but compare it against the earliest available snapshot before that editor edit.
+    # This captures the full editing session instead of only the last save.
     final_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(final_editor_name, r)]
     if final_matches:
         final_idx = final_matches[-1]
+        final_rev = ordered[final_idx]
+
+        # Earliest available revision before the final editor revision.
+        # If all exposed revisions are by the same editor, this still catches the
+        # full set of visible changes from first saved snapshot to current.
         if final_idx > 0:
-            base_idx = final_idx - 1
-            base_rev = ordered[base_idx]
-            final_rev = ordered[final_idx]
-            base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
-            final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
-            return base_text, final_text, base_rev, final_rev, "fallback_latest_editor_vs_previous_revision"
+            base_rev = ordered[0]
+            result = _export_pair(base_rev, final_rev, "fallback_oldest_before_latest_editor_revision")
+            if result[0] and normalize_for_compare(result[0]) != normalize_for_compare(result[1]):
+                return result
 
-    # If the editor name does not appear in Drive API revisions, compare the last two revisions.
-    base_rev = ordered[-2]
-    final_rev = ordered[-1]
-    base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
-    final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
-    if base_text and final_text and normalize_for_compare(base_text) != normalize_for_compare(final_text):
-        return base_text, final_text, base_rev, final_rev, "fallback_latest_vs_previous_revision"
+            # If oldest produced no text difference, try the immediately previous revision.
+            base_rev = ordered[final_idx - 1]
+            result = _export_pair(base_rev, final_rev, "fallback_latest_editor_vs_previous_revision")
+            if result[0]:
+                return result
 
-    # Last resort: oldest available revision vs latest available revision.
-    base_rev = ordered[0]
-    final_rev = ordered[-1]
-    if base_rev.get("id") != final_rev.get("id"):
-        base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
-        final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
-        return base_text, final_text, base_rev, final_rev, "fallback_oldest_vs_latest_revision"
+    # If the editor name does not appear in Drive API revisions, compare the oldest
+    # exportable snapshot against the latest exportable snapshot.
+    result = _export_pair(ordered[0], ordered[-1], "fallback_oldest_vs_latest_revision")
+    if result[0] and normalize_for_compare(result[0]) != normalize_for_compare(result[1]):
+        return result
+
+    # Last resort: compare the last two exportable snapshots.
+    result = _export_pair(ordered[-2], ordered[-1], "fallback_latest_vs_previous_revision")
+    if result[0]:
+        return result
 
     return None, None, None, None, "fallback_no_comparable_revisions"
 
@@ -2469,7 +2487,7 @@ def page_gdoc_submit():
     else:
         handoff_status = "not_enough_revisions"
 
-    if not diff_classified and handoff_status not in {"editor_handoff", "fallback_latest_editor_vs_previous_revision", "fallback_latest_vs_previous_revision", "fallback_oldest_vs_latest_revision"}:
+    if not diff_classified and handoff_status not in {"editor_handoff", "fallback_latest_editor_vs_previous_revision", "fallback_latest_vs_previous_revision", "fallback_oldest_vs_latest_revision", "fallback_oldest_before_latest_editor_revision"}:
         st.warning(
             "Could not compare silent edits from Google Docs revision history. "
             "The service account can access the document, but Google did not expose enough exportable revisions. "
@@ -2478,7 +2496,7 @@ def page_gdoc_submit():
     elif handoff_status != "editor_handoff":
         st.info(
             "Writer/editor handoff names were not fully available in Google revision history, "
-            "so the app used fallback comparison: latest editor revision vs the previous available revision."
+            "so the app used fallback comparison: earliest available revision vs latest editor/current revision."
         )
 
     prog.progress(65, text="Classifying editor comments with AI…")
