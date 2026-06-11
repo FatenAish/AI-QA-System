@@ -29,9 +29,46 @@ except ImportError:
 try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     GOOGLE_OK = True
 except ImportError:
+    HttpError = Exception
     GOOGLE_OK = False
+
+SERVICE_ACCOUNT_EMAIL = "content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com"
+
+def get_service_account_email():
+    """Return the service account email shown to users for Google Doc sharing."""
+    try:
+        info = dict(st.secrets.get("gcp_service_account", {}))
+        return info.get("client_email") or SERVICE_ACCOUNT_EMAIL
+    except Exception:
+        return SERVICE_ACCOUNT_EMAIL
+
+def friendly_google_api_error(e, doc_id=""):
+    """Convert Google API errors into clear Streamlit-facing messages."""
+    status = None
+    try:
+        status = getattr(getattr(e, "resp", None), "status", None)
+    except Exception:
+        status = None
+
+    service_email = get_service_account_email()
+    doc_hint = f" Document ID: {doc_id}." if doc_id else ""
+
+    if status == 404:
+        return (
+            "Google Drive could not find or access this document."
+            f"{doc_hint} Share the Google Doc with {service_email} as Editor, "
+            "then try again. Also make sure the link is a Google Doc link copied from the browser, not a shortcut or a deleted/moved file."
+        )
+    if status == 403:
+        return (
+            "Google Drive found the document but permission is blocked."
+            f"{doc_hint} Share it with {service_email} as Editor. "
+            "If it is shared as 'Anyone with the link', change it to company-restricted sharing."
+        )
+    return f"Google API error: {e}"
 
 st.set_page_config(page_title="Content QA System", page_icon="Q", layout="wide",
                    initial_sidebar_state="expanded")
@@ -316,8 +353,29 @@ def get_google_services():
     return docs, drive, creds
 
 def extract_doc_id(url):
-    m = re.search(r'/document/d/([a-zA-Z0-9-_]+)', url)
-    return m.group(1) if m else None
+    """Extract a Google Doc ID from a full URL or a raw document ID."""
+    value = str(url or "").strip()
+    if not value:
+        return None
+
+    # Remove fragments/query strings first; they are not part of the file ID.
+    value = value.split("#", 1)[0].split("?", 1)[0]
+
+    # Standard Google Doc URL.
+    m = re.search(r"/document/d/([a-zA-Z0-9_-]+)", value)
+    if m:
+        return m.group(1)
+
+    # Sometimes users paste only the ID.
+    if re.fullmatch(r"[a-zA-Z0-9_-]{20,}", value):
+        return value
+
+    return None
+
+def clean_google_doc_url(url):
+    """Return a clean canonical Google Doc URL for display/debugging."""
+    doc_id = extract_doc_id(url)
+    return f"https://docs.google.com/document/d/{doc_id}/edit" if doc_id else str(url or "").strip()
 
 
 
@@ -365,8 +423,10 @@ def validate_dubizzle_group_google_doc(drive_svc, doc_id):
             ),
             supportsAllDrives=True,
         ).execute()
+    except HttpError as e:
+        return False, friendly_google_api_error(e, doc_id)
     except Exception as e:
-        return False, f"Could not verify document access/security: {e}"
+        return False, f"Could not verify document access/security. Share the doc with {get_service_account_email()} as Editor and try again. Details: {e}"
 
     if meta.get("mimeType") != "application/vnd.google-apps.document":
         return False, "Only Google Docs files are accepted. Please submit a Google Doc link."
@@ -1579,8 +1639,10 @@ def fetch_google_doc(url):
         doc   = docs_svc.documents().get(documentId=doc_id).execute()
         title = doc.get("title", "Untitled")
         text, headings = extract_text_from_gdoc(doc)
+    except HttpError as e:
+        return None, friendly_google_api_error(e, doc_id)
     except Exception as e:
-        return None, f"Could not read doc (is it shared with the service account?): {e}"
+        return None, f"Could not read doc. Share it with {get_service_account_email()} as Editor and try again. Details: {e}"
 
     # ── Suggestions (tracked changes in Suggesting mode) ───────────────────
     # These are editor edits made in suggestion mode — no extra API call needed.
@@ -2075,6 +2137,7 @@ def sidebar():
 def page_submit():
     inject_css()
     st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ File upload mode</div><h1>Submit Article</h1><p>Upload a .docx with editor comments for automated scoring.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    service_email = get_service_account_email()
     main_col, side_col = st.columns([3.1, 1.05], gap="large")
 
     with main_col:
@@ -2110,7 +2173,7 @@ def page_submit():
                 go = st.form_submit_button("✦  Run full evaluation", use_container_width=True, type="primary")
 
     with side_col:
-        st.markdown("""<div class="side-card">
+        st.markdown(f"""<div class="side-card">
   <div class="side-card-title">File upload mode</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Upload .docx</div><div class="timeline-sub">With editor comments inside.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">Score calculated</div><div class="timeline-sub">Based on comment types.</div></div></div>
@@ -2181,6 +2244,7 @@ def page_gdoc_submit():
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
         return
 
+    service_email = get_service_account_email()
     main_col, side_col = st.columns([3.1, 1.05], gap="large")
 
     with main_col:
@@ -2201,7 +2265,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown('<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Only Dubizzle Group/Bayut Google Docs are accepted. Share the doc with: <strong>content-qa-bot@bayut-competitor-gap-analysis.iam.gserviceaccount.com</strong></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Only Dubizzle Group/Bayut Google Docs are accepted. Share the doc with: <strong>{get_service_account_email()}</strong></div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -2223,17 +2287,19 @@ def page_gdoc_submit():
                 go = st.form_submit_button("✦  Run full evaluation", use_container_width=True, type="primary")
 
     with side_col:
-        st.markdown("""<div class="side-card">
+        st.markdown(f"""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a Dubizzle Group/Bayut Google Doc only. Public “Anyone with the link” and personal Gmail docs will be rejected. Share the doc with the service account as Editor for revision export.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a Dubizzle Group/Bayut Google Doc only. Public “Anyone with the link” and personal Gmail docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
         st.error("Please fill in writer name and Google Doc URL."); return
+
+    doc_url = clean_google_doc_url(doc_url)
 
     with st.spinner("Fetching Google Doc…"):
         parsed, err = fetch_google_doc(doc_url)
