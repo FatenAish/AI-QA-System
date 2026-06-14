@@ -7,6 +7,7 @@ from datetime import datetime
 from io import BytesIO
 import difflib
 import html
+import hashlib
 
 try:
     from groq import Groq
@@ -130,9 +131,9 @@ def load_records():
 
 def save_record(sub):
     records = load_records()
-    key = (sub["writer"], sub["title"], sub["date"])
+    key = _record_storage_key(sub)
     for r in records:
-        if (r["writer"], r["title"], r["date"]) == key:
+        if _record_storage_key(r) == key:
             return
     records.append(_serialisable(sub))
     with open(RECORDS_FILE, "w", encoding="utf-8") as f:
@@ -140,9 +141,9 @@ def save_record(sub):
 
 def update_record_decision(sub):
     records = load_records()
-    key = (sub["writer"], sub["title"], sub["date"])
+    key = _record_storage_key(sub)
     for r in records:
-        if (r["writer"], r["title"], r["date"]) == key:
+        if _record_storage_key(r) == key:
             r["editor_decision"] = sub.get("editor_decision", "")
             r["editor_notes"]    = sub.get("editor_notes", "")
             break
@@ -154,6 +155,54 @@ def _serialisable(obj):
     if isinstance(obj, (list, tuple)): return [_serialisable(i) for i in obj]
     if isinstance(obj, (str, int, float, bool)) or obj is None: return obj
     return str(obj)
+
+
+def _safe_key_part(value):
+    """Return a short safe string for Streamlit widget keys."""
+    value = str(value or "").strip()
+    value = re.sub(r"[^A-Za-z0-9_\-]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value[:80] or "blank"
+
+
+def _submission_identity(sub):
+    """
+    Stable identity for one dashboard/report widget set.
+
+    Title + date alone is not unique enough because the dashboard can contain
+    repeated evaluations for the same article/minute, or the same Google Doc
+    reviewed by different editor chains. Streamlit widget keys must be unique
+    for every expanded report on the page.
+    """
+    fields = [
+        sub.get("mode", ""),
+        sub.get("title", ""),
+        sub.get("writer", ""),
+        sub.get("editor_name", ""),
+        sub.get("date", ""),
+        sub.get("platform", ""),
+        sub.get("content_type", ""),
+        sub.get("language", ""),
+        sub.get("doc_url", ""),
+        sub.get("file_name", ""),
+    ]
+    raw = "||".join(str(x or "") for x in fields)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _sub_widget_key(sub, prefix):
+    """Unique Streamlit widget key for widgets inside full reports."""
+    return f"{prefix}_{_safe_key_part(sub.get('title','Untitled'))}_{_submission_identity(sub)}"
+
+
+def _record_storage_key(sub):
+    """Unique enough key for saving/updating a dashboard record."""
+    return (
+        sub.get("mode", ""), sub.get("title", ""), sub.get("writer", ""),
+        sub.get("editor_name", ""), sub.get("date", ""), sub.get("platform", ""),
+        sub.get("content_type", ""), sub.get("language", ""), sub.get("doc_url", ""),
+        sub.get("file_name", ""), round(float(sub.get("qa_score", 0) or 0), 2),
+    )
 
 # ── CSS ────────────────────────────────────────────────────────────────────
 def inject_css():
@@ -2990,7 +3039,7 @@ def page_submit():
 # ── Google Doc submit page ─────────────────────────────────────────────────
 def page_gdoc_submit():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review. Editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
 
     if not GOOGLE_OK:
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
@@ -3017,7 +3066,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Keep the Google Doc restricted and share it with: <strong>{get_service_account_email()}</strong> as Editor</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the file with: <strong>{get_service_account_email()}</strong></div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -3042,10 +3091,10 @@ def page_gdoc_submit():
         st.markdown(f"""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact and source: 3 pts · Wrong info removed: 2 pts · Missing: 1.2 to 1.5 pts · Rephrase: 0.3 pts</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Writer handoff vs editor final scored</div><div class="timeline-sub">Compares the writer handoff against the editor final text automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a private/restricted Google Doc. Public “Anyone with the link” docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the file with:<br><strong>{service_email}</strong></div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
@@ -3473,12 +3522,12 @@ def render_gdoc_report(sub):
     rec_idx  = {"approve": 0, "revise": 1, "reject": 2}
     decision = st.radio("Decision", ["Approve", "Request revision", "Reject"],
                         index=rec_idx.get(rec, 1), horizontal=True,
-                        key=f"gdec_{sub['title']}_{sub['date']}")
+                        key=_sub_widget_key(sub, "gdec"))
     notes = st.text_area("Notes for writer", height=90,
                          placeholder="Tell the writer exactly what to fix.",
-                         key=f"gnotes_{sub['title']}_{sub['date']}")
+                         key=_sub_widget_key(sub, "gnotes"))
     if st.button("Confirm decision", type="primary", use_container_width=True,
-                 key=f"gconf_{sub['title']}_{sub['date']}"):
+                 key=_sub_widget_key(sub, "gconf")):
         if decision in ("Request revision", "Reject") and not notes.strip():
             st.error("Please add notes before confirming.")
         else:
@@ -3552,12 +3601,12 @@ def render_report(sub):
     rec_idx  = {"approve": 0, "revise": 1, "reject": 2}
     decision = st.radio("Decision", ["Approve", "Request revision", "Reject"],
                         index=rec_idx.get(rec, 1), horizontal=True,
-                        key=f"dec_{sub['title']}_{sub['date']}")
+                        key=_sub_widget_key(sub, "dec"))
     notes = st.text_area("Notes for writer", height=90,
                          placeholder="Tell the writer exactly what to fix.",
-                         key=f"notes_{sub['title']}_{sub['date']}")
+                         key=_sub_widget_key(sub, "notes"))
     if st.button("Confirm decision", type="primary", use_container_width=True,
-                 key=f"conf_{sub['title']}_{sub['date']}"):
+                 key=_sub_widget_key(sub, "conf")):
         if decision in ("Request revision", "Reject") and not notes.strip():
             st.error("Please add notes before confirming.")
         else:
@@ -3577,6 +3626,36 @@ def page_dashboard():
     all_subs = st.session_state.get("submissions", [])
     if not all_subs:
         st.info("No evaluations yet. Submit an article to get started."); return
+
+    dash_tools = st.columns([1, 1, 4])
+    with dash_tools[0]:
+        if st.button("Refresh dashboard", use_container_width=True, key="dash_refresh_records"):
+            st.session_state.submissions = load_records()
+            st.rerun()
+    with dash_tools[1]:
+        if st.button("Clean duplicates", use_container_width=True, key="dash_clean_duplicates"):
+            cleaned = []
+            seen = set()
+            # Keep the newest occurrence shown first on dashboard by walking reversed records.
+            for rec in reversed(load_records()):
+                ident = (
+                    rec.get("mode", ""), rec.get("title", ""), rec.get("writer", ""),
+                    rec.get("editor_name", ""), rec.get("date", ""), rec.get("platform", ""),
+                    rec.get("content_type", ""), rec.get("language", ""), rec.get("doc_url", ""),
+                    round(float(rec.get("qa_score", 0) or 0), 2),
+                )
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                cleaned.append(rec)
+            cleaned = list(reversed(cleaned))
+            with open(RECORDS_FILE, "w", encoding="utf-8") as f:
+                json.dump(_serialisable(cleaned), f, ensure_ascii=False, indent=2)
+            st.session_state.submissions = cleaned
+            st.success("Dashboard duplicates cleaned.")
+            st.rerun()
+
+    all_subs = st.session_state.get("submissions", [])
 
     total     = len(all_subs)
     approved  = sum(1 for s in all_subs if s.get("editor_decision") == "Approve")
@@ -3658,7 +3737,7 @@ def page_dashboard():
   </div>
 </div>""", unsafe_allow_html=True)
 
-        with st.expander("View full report"):
+        with st.expander(f"View full report — {sub.get('writer','—')} · {sub.get('date','')}"):
             render_report(sub)
 
 # ── Main ───────────────────────────────────────────────────────────────────
