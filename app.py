@@ -1048,6 +1048,10 @@ Use ONLY these type values:
 
 Important:
 - Do NOT over-penalize simple rewriting.
+- Do NOT classify an edit as factual/source-related only because the paragraph contains prices, ages, locations, tickets, images, amenities, or source-like terms.
+- Use factual/source_alignment ONLY when the factual value itself changed, was added, or was removed: number, price, age, date, URL, location/name, unit type, handover, payment plan, legal/source detail.
+- If prices, ages, ticket details, names and other hard facts stay the same, classify wording/tone changes as rephrase, grammar, or arabic_language.
+- Marketing/style changes such as slogans, adjectives, sentence flow, or brand voice are rephrase unless they change a concrete fact.
 - If old and new facts are the same, use grammar/rephrase/arabic_language.
 - If the fact changed or wrong info was removed, use factual/wrong_info_removed/source_alignment.
 - For delete-only changes, decide whether it is wrong_info_removed, structural, or rephrase cleanup.
@@ -1084,6 +1088,7 @@ Every change must be classified. Use one of: {allowed}.
                     ctype = "grammar"
                 if ctype not in COMMENT_WEIGHTS:
                     ctype = fallback_diff_type(ch, lang)
+                ctype = _guard_high_impact_classification(ctype, ch, lang)
                 w = COMMENT_WEIGHTS[ctype]
                 severity = info.get("severity") or ("high" if ctype in HIGH_IMPACT_EDIT_TYPES else "low" if ctype in LOW_IMPACT_EDIT_TYPES else "medium")
                 classified.append({
@@ -1106,6 +1111,7 @@ Every change must be classified. Use one of: {allowed}.
     classified = []
     for ch in changes:
         ctype = fallback_diff_type(ch, lang)
+        ctype = _guard_high_impact_classification(ctype, ch, lang)
         w = COMMENT_WEIGHTS[ctype]
         classified.append({
             **ch,
@@ -1127,6 +1133,115 @@ def _extract_numbers_for_fact_check(value):
 
 def _number_sets_differ(a, b):
     return set(_extract_numbers_for_fact_check(a)) != set(_extract_numbers_for_fact_check(b))
+
+
+# ── Fact-change guardrails ─────────────────────────────────────────────────
+def _extract_urls_for_fact_check(value):
+    return set(re.findall(r"https?://\S+|www\.\S+", str(value or "").lower()))
+
+
+def _extract_currency_amounts_for_fact_check(value):
+    text = str(value or "").lower()
+    # Capture common money patterns such as AED 545, 545 AED, $500, د.إ 500.
+    patterns = []
+    patterns.extend(re.findall(r"(?:aed|د\.إ|درهم)\s*\d+(?:[,.]\d+)?", text))
+    patterns.extend(re.findall(r"\d+(?:[,.]\d+)?\s*(?:aed|د\.إ|درهم)", text))
+    patterns.extend(re.findall(r"[$€£]\s*\d+(?:[,.]\d+)?", text))
+    return set(re.sub(r"\s+", " ", x.strip()) for x in patterns)
+
+
+def _extract_percentage_values_for_fact_check(value):
+    return set(re.findall(r"\d+(?:[,.]\d+)?\s*%", str(value or "").lower()))
+
+
+def _extract_measurement_values_for_fact_check(value):
+    text = str(value or "").lower()
+    return set(re.findall(
+        r"\d+(?:[,.]\d+)?\s*(?:sq\s*ft|sqft|square feet|sqm|m²|km|kilometres?|kilometers?|minutes?|mins?|hours?|hrs?|years?|yrs?|bedrooms?|br|غرف|غرفة|قدم|متر|دقيقة|دقائق|ساعة|ساعات|سنة|سنوات)",
+        text,
+    ))
+
+
+def _extract_english_named_entities_for_fact_check(value):
+    """Lightweight entity detector for factual-name changes without adding NLP deps."""
+    text = str(value or "")
+    # Keep multi-word title-case entities and all-caps abbreviations. Ignore common labels.
+    ignore = {
+        "These", "Visitors", "Tickets", "Age", "Image", "The", "This", "That",
+        "A", "An", "And", "Or", "But", "In", "On", "At", "For", "With",
+    }
+    entities = set()
+    for m in re.finditer(r"\b(?:[A-Z][a-z]+|[A-Z]{2,})(?:\s+(?:[A-Z][a-z]+|[A-Z]{2,}))*\b", text):
+        ent = m.group(0).strip()
+        if ent in ignore:
+            continue
+        # Single common label words should not make a factual difference.
+        if len(ent.split()) == 1 and ent in ignore:
+            continue
+        entities.add(ent.lower())
+    return entities
+
+
+def _extract_fact_fingerprint(value):
+    """Extract concrete factual markers that justify high-impact factual scoring."""
+    return {
+        "numbers": set(_extract_numbers_for_fact_check(value)),
+        "money": _extract_currency_amounts_for_fact_check(value),
+        "percentages": _extract_percentage_values_for_fact_check(value),
+        "measurements": _extract_measurement_values_for_fact_check(value),
+        "urls": _extract_urls_for_fact_check(value),
+        "entities": _extract_english_named_entities_for_fact_check(value),
+    }
+
+
+def _material_fact_changed(original, revised):
+    """
+    Return True only when a concrete factual marker changed.
+
+    This prevents false high-impact classifications when a paragraph contains facts
+    like price/age/location but the editor only improved wording or brand voice.
+    Example: AED 545 and age 8+ remain unchanged, so changing "dolphinastic" to
+    "a treat" is rephrase, not factual.
+    """
+    old_fp = _extract_fact_fingerprint(original)
+    new_fp = _extract_fact_fingerprint(revised)
+
+    # URLs, money, percentages, measurements and numbers are concrete facts.
+    for key in ["urls", "money", "percentages", "measurements", "numbers"]:
+        if old_fp[key] != new_fp[key]:
+            return True
+
+    # Named entity changes can be factual, but ignore when both sides have no entities.
+    if old_fp["entities"] or new_fp["entities"]:
+        if old_fp["entities"] != new_fp["entities"]:
+            return True
+
+    return False
+
+
+def _low_impact_type_for_non_factual_edit(change, lang):
+    """Choose a safe low-impact label when the model overcalled factual/source."""
+    original = change.get("original", "") or ""
+    revised = change.get("revised", "") or ""
+    both = f"{original} {revised}"
+    if lang == "Arabic" or re.search(r"[\u0600-\u06FF]", both):
+        return "arabic_language" if token_similarity(original, revised) >= 0.82 else "rephrase"
+    return "grammar" if token_similarity(original, revised) >= 0.92 else "rephrase"
+
+
+def _guard_high_impact_classification(ctype, change, lang):
+    """
+    Downgrade false factual/source classifications when no concrete fact changed.
+
+    The model may see words like Tickets, AED, age, location or Image and mark the
+    whole paragraph as factual even though those values stayed identical. High-impact
+    labels are allowed only when the changed text actually changes/adds/removes a
+    concrete factual marker.
+    """
+    if ctype in {"factual", "source_alignment", "contradiction_fixed"}:
+        if not _material_fact_changed(change.get("original", ""), change.get("revised", "")):
+            return _low_impact_type_for_non_factual_edit(change, lang)
+    return ctype
 
 def _looks_like_comment_artifact(original, revised):
     both = f"{original} {revised}"
@@ -1201,11 +1316,11 @@ def fallback_diff_type(ch, lang):
                 return "missing_info_added"
             return "rephrase" if len(revised.split()) < 25 else "rephrase"
 
-        if any(k in both for k in source_keywords) and sim < 0.90:
+        if any(k in both for k in source_keywords) and sim < 0.90 and _material_fact_changed(original, revised):
             return "source_alignment"
 
-        # Only mark factual when numbers or clearly measurable details changed.
-        if _number_sets_differ(original, revised) and any(k in both for k in hard_fact_keywords):
+        # Only mark factual when concrete factual markers changed.
+        if _material_fact_changed(original, revised) and any(k in both for k in hard_fact_keywords):
             return "factual"
 
         if sim >= 0.82:
@@ -1223,16 +1338,16 @@ def fallback_diff_type(ch, lang):
     ]
 
     if tag == "delete" and len(original.split()) >= 6:
-        if any(k in both for k in fact_keywords + source_keywords):
+        if any(k in both for k in fact_keywords + source_keywords) and _material_fact_changed(original, revised):
             return "wrong_info_removed"
         return "structural" if len(original.split()) > 25 else "rephrase"
     if tag == "insert" and len(revised.split()) >= 6:
-        if any(k in both for k in fact_keywords + source_keywords):
+        if any(k in both for k in fact_keywords + source_keywords) and _material_fact_changed(original, revised):
             return "missing_info_added"
         return "rephrase" if len(revised.split()) > 18 else "rephrase"
-    if any(k in both for k in source_keywords) and sim < 0.92:
+    if any(k in both for k in source_keywords) and sim < 0.92 and _material_fact_changed(original, revised):
         return "source_alignment"
-    if any(k in both for k in fact_keywords) and sim < 0.88:
+    if any(k in both for k in fact_keywords) and sim < 0.88 and _material_fact_changed(original, revised):
         return "factual"
     if sim >= 0.90:
         return "grammar"
