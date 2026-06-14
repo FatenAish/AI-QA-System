@@ -1301,9 +1301,19 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     writer_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(writer_name, r)]
     editor_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(editor_name, r)]
 
-    current_is_editor = bool(current_text) and _current_file_matches_revision_user(editor_name, current_file_meta)
+    # Google Docs UI can show the editor as the CURRENT visible version, while
+    # Drive revisions().list() may not expose that current version as a separate
+    # exportable revision. In that case, editor_matches will be empty even though
+    # the current document text is the editor final version.
+    #
+    # Rule for QA: if the entered writer exists in revision history but the entered
+    # editor is not found in Drive revisions, use the live/current document text as
+    # the editor final version. This prevents false 100/100 scores for docs where
+    # the editor's final save is only visible in the Google Docs UI.
+    current_matches_editor = bool(current_text) and _current_file_matches_revision_user(editor_name, current_file_meta)
+    current_can_be_editor_final = bool(current_text) and (current_matches_editor or not editor_matches)
 
-    if not writer_matches and not editor_matches and not current_is_editor:
+    if not writer_matches and not editor_matches and not current_can_be_editor_final:
         return None, None, None, None, "writer_and_editor_not_found_in_revisions"
     if not writer_matches:
         return None, None, None, None, "writer_not_found_in_revisions"
@@ -1318,7 +1328,7 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     # writer's last saved handoff before the current editor version
     # vs
     # current live Google Doc text by the editor.
-    if current_is_editor:
+    if current_can_be_editor_final:
         writer_handoff_idx = writer_matches[-1]
         writer_rev = ordered[writer_handoff_idx]
         writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
@@ -1326,9 +1336,9 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
         editor_rev = _current_file_revision_stub(current_file_meta)
         if not writer_text or not editor_text:
             return None, None, writer_rev, editor_rev, "could_not_export_writer_revision_or_current_doc"
-        if normalize_for_compare(writer_text) == normalize_for_compare(editor_text):
+        if current_matches_editor:
             return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_current_editor_doc"
-        return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_current_editor_doc"
+        return writer_text, editor_text, writer_rev, editor_rev, "editor_not_in_drive_revisions_used_current_doc_text"
 
     if not editor_matches:
         return None, None, None, None, "editor_not_found_in_revisions"
@@ -2724,6 +2734,7 @@ def page_gdoc_submit():
     successful_handoff_statuses = {
         "editor_session_writer_handoff_vs_editor_final",
         "editor_session_writer_handoff_vs_current_editor_doc",
+        "editor_not_in_drive_revisions_used_current_doc_text",
     }
     if handoff_status not in successful_handoff_statuses:
         st.warning(
@@ -2734,6 +2745,10 @@ def page_gdoc_submit():
     elif handoff_status == "editor_session_writer_handoff_vs_current_editor_doc":
         st.info(
             "Silent edits compared using current Google Doc text as the editor final version, because the editor's latest visible version is the current document and may not be exportable as a separate Drive revision."
+        )
+    elif handoff_status == "editor_not_in_drive_revisions_used_current_doc_text":
+        st.info(
+            "The editor name was not exposed in Drive revisions, so the app used the current Google Doc text as the editor final version and compared it against the writer's latest saved handoff revision."
         )
 
     prog.progress(65, text="Classifying editor comments with AI…")
