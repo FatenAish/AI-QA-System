@@ -1259,7 +1259,28 @@ def _name_matches_revision_user(name, revision):
     return matched >= required
 
 
-def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor_name, revisions):
+def _current_file_matches_revision_user(name, current_file_meta):
+    """Return True when the current Google Drive file last modifier matches the entered user name."""
+    if not current_file_meta:
+        return False
+    user = current_file_meta.get("lastModifyingUser", {}) or {}
+    if not user:
+        return False
+    fake_revision = {"lastModifyingUser": user}
+    return _name_matches_revision_user(name, fake_revision)
+
+
+def _current_file_revision_stub(current_file_meta):
+    """Create a revision-like object for the current live Google Doc text."""
+    current_file_meta = current_file_meta or {}
+    return {
+        "id": "current_google_doc_text",
+        "modifiedTime": current_file_meta.get("modifiedTime", "current"),
+        "lastModifyingUser": current_file_meta.get("lastModifyingUser", {}) or {},
+        "is_current_doc_text": True,
+    }
+
+def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor_name, revisions, current_text=None, current_file_meta=None):
     """
     Correct QA silent-edit comparison by editor session:
 
@@ -1280,10 +1301,35 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     writer_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(writer_name, r)]
     editor_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(editor_name, r)]
 
-    if not writer_matches and not editor_matches:
+    current_is_editor = bool(current_text) and _current_file_matches_revision_user(editor_name, current_file_meta)
+
+    if not writer_matches and not editor_matches and not current_is_editor:
         return None, None, None, None, "writer_and_editor_not_found_in_revisions"
     if not writer_matches:
         return None, None, None, None, "writer_not_found_in_revisions"
+
+    # Important Google Docs edge case:
+    # Drive revisions().list() may show/export only older saved revisions, while
+    # the visible Google Docs Version history shows the CURRENT version under the
+    # editor's name. In that case the editor's final text is the live document
+    # body we already fetched with docs.documents().get().
+    #
+    # Correct QA comparison here is:
+    # writer's last saved handoff before the current editor version
+    # vs
+    # current live Google Doc text by the editor.
+    if current_is_editor:
+        writer_handoff_idx = writer_matches[-1]
+        writer_rev = ordered[writer_handoff_idx]
+        writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
+        editor_text = current_text
+        editor_rev = _current_file_revision_stub(current_file_meta)
+        if not writer_text or not editor_text:
+            return None, None, writer_rev, editor_rev, "could_not_export_writer_revision_or_current_doc"
+        if normalize_for_compare(writer_text) == normalize_for_compare(editor_text):
+            return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_current_editor_doc"
+        return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_current_editor_doc"
+
     if not editor_matches:
         return None, None, None, None, "editor_not_found_in_revisions"
 
@@ -1910,6 +1956,14 @@ def fetch_google_doc(url):
         doc   = docs_svc.documents().get(documentId=doc_id).execute()
         title = doc.get("title", "Untitled")
         text, headings = extract_text_from_gdoc(doc)
+        try:
+            current_file_meta = drive_svc.files().get(
+                fileId=doc_id,
+                fields="id,name,modifiedTime,lastModifyingUser(displayName,emailAddress)",
+                supportsAllDrives=True,
+            ).execute()
+        except Exception:
+            current_file_meta = {}
     except HttpError as e:
         return None, friendly_google_api_error(e, doc_id)
     except Exception as e:
@@ -1996,6 +2050,7 @@ def fetch_google_doc(url):
         "comments_error":  comments_error,
         "suggestions":     suggestions,
         "revisions":       revisions,
+        "current_file_meta": current_file_meta,
         "revision_count_from_api": len(revisions),
         "word_count":      len(text.split()),
         "drive_svc":       drive_svc,
@@ -2626,7 +2681,9 @@ def page_gdoc_submit():
         prog.progress(50, text="Comparing writer handoff vs editor final session version…")
         handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
             parsed["drive_svc"], parsed["svc_creds"],
-            extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
+            extract_doc_id(doc_url), writer, editor_name, parsed["revisions"],
+            current_text=parsed.get("text", ""),
+            current_file_meta=parsed.get("current_file_meta", {}),
         )
 
         writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
@@ -2664,11 +2721,19 @@ def page_gdoc_submit():
     else:
         handoff_status = "not_enough_revisions"
 
-    if handoff_status != "editor_session_writer_handoff_vs_editor_final":
+    successful_handoff_statuses = {
+        "editor_session_writer_handoff_vs_editor_final",
+        "editor_session_writer_handoff_vs_current_editor_doc",
+    }
+    if handoff_status not in successful_handoff_statuses:
         st.warning(
             "Could not compare silent edits because the app could not find the writer handoff revision before the editor session and the editor final revision before the writer returned. "
             f"Status: {handoff_status}. Open Google Docs version history and make sure the Writer name and Subeditor / editor name exactly match the saved version owners. "
             "If the writer did not directly save a version in this Google Doc, silent edits cannot be scored from revision history."
+        )
+    elif handoff_status == "editor_session_writer_handoff_vs_current_editor_doc":
+        st.info(
+            "Silent edits compared using current Google Doc text as the editor final version, because the editor's latest visible version is the current document and may not be exportable as a separate Drive revision."
         )
 
     prog.progress(65, text="Classifying editor comments with AI…")
