@@ -498,21 +498,41 @@ def validate_dubizzle_group_google_doc(drive_svc, doc_id):
 
     return False, f"Could not confirm access. Keep the doc restricted and share it with {get_service_account_email()} as Editor."
 
+def _execute_revision_get(drive_svc, doc_id, revision_id):
+    """
+    Google Drive revision endpoints are inconsistent across Docs / Shared Drives.
+    Some client versions reject supportsAllDrives on revisions().get(), which used
+    to make the app silently return None for every revision export. Try the normal
+    call first, then retry with supportsAllDrives only if the client accepts it.
+    """
+    base = dict(
+        fileId=doc_id,
+        revisionId=revision_id,
+        fields="id,modifiedTime,lastModifyingUser,exportLinks",
+    )
+    try:
+        return drive_svc.revisions().get(**base).execute()
+    except TypeError:
+        # Client definitely does not support extra params here.
+        raise
+    except Exception as first_err:
+        try:
+            return drive_svc.revisions().get(**base, supportsAllDrives=True).execute()
+        except Exception:
+            raise first_err
+
+
 def export_revision_text(drive_svc, creds, doc_id, revision_id):
-    """Export a specific revision as plain text."""
+    """Export a specific Google Docs revision as plain text."""
+    if not revision_id:
+        return None
     try:
         import google.auth.transport.requests
-        # Get export link for this revision
-        rev = drive_svc.revisions().get(
-            fileId=doc_id,
-            revisionId=revision_id,
-            fields="exportLinks",
-            supportsAllDrives=True,
-        ).execute()
-        export_url = rev.get("exportLinks", {}).get("text/plain", "")
+        rev = _execute_revision_get(drive_svc, doc_id, revision_id)
+        export_url = (rev.get("exportLinks") or {}).get("text/plain", "")
         if not export_url:
             return None
-        # Refresh credentials to get a valid token
+
         auth_req = google.auth.transport.requests.Request()
         if not creds.valid:
             creds.refresh(auth_req)
@@ -522,8 +542,44 @@ def export_revision_text(drive_svc, creds, doc_id, revision_id):
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8")
-    except Exception as e:
+    except Exception:
         return None
+
+
+def list_drive_revisions_safe(drive_svc, doc_id):
+    """
+    Fetch Drive revisions without breaking on unsupported parameters.
+
+    Important: revisions().list() does not behave like files().get() in every
+    Google client/runtime. Passing unsupported Shared Drive args can make the
+    whole revision list fail, which caused fake 100/100 results because the app
+    thought there were no exportable revisions. This helper retries cleanly.
+    """
+    revisions = []
+    page_token = None
+    while True:
+        base = dict(
+            fileId=doc_id,
+            fields="nextPageToken,revisions(id,modifiedTime,lastModifyingUser,exportLinks)",
+            pageSize=1000,
+        )
+        if page_token:
+            base["pageToken"] = page_token
+
+        try:
+            resp = drive_svc.revisions().list(**base).execute()
+        except Exception:
+            # Last retry for runtimes that do accept supportsAllDrives on revisions.
+            try:
+                resp = drive_svc.revisions().list(**base, supportsAllDrives=True).execute()
+            except Exception:
+                break
+
+        revisions.extend(resp.get("revisions", []) or [])
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return revisions
 
 def _safe_html(value):
     return html.escape(str(value or ""))
@@ -1316,7 +1372,7 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     # the editor final version. This prevents false 100/100 scores for docs where
     # the editor's final save is only visible in the Google Docs UI.
     current_matches_editor = bool(current_text) and _current_file_matches_revision_user(editor_name, current_file_meta)
-    current_can_be_editor_final = bool(current_text) and (current_matches_editor or not editor_matches)
+    current_can_be_editor_final = bool(current_text) and current_matches_editor
 
     if not writer_matches and not editor_matches and not current_can_be_editor_final:
         return None, None, None, None, "writer_and_editor_not_found_in_revisions"
@@ -2230,25 +2286,9 @@ def fetch_google_doc(url):
         comments_error = str(e)
 
     # ── Revision history ───────────────────────────────────────────────────
-    revisions = []
-    try:
-        page_token = None
-        while True:
-            params = dict(
-                fileId=doc_id,
-                fields="nextPageToken,revisions(id,modifiedTime,lastModifyingUser,exportLinks)",
-                pageSize=1000,
-                supportsAllDrives=True,
-            )
-            if page_token:
-                params["pageToken"] = page_token
-            resp = drive_svc.revisions().list(**params).execute()
-            revisions.extend(resp.get("revisions", []))
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-    except Exception:
-        pass
+    # Use the safe helper. Do not silently lose all revisions because a Drive
+    # revision endpoint rejected an optional parameter.
+    revisions = list_drive_revisions_safe(drive_svc, doc_id)
 
     return {
         "title":           title,
