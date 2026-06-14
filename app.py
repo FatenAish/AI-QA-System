@@ -1295,7 +1295,11 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     latest editor version is wrong because the latest writer version is no longer
     the original handoff version.
     """
-    if not revisions or len(revisions) < 2:
+    # Drive revisions().list() may expose only one exportable snapshot even when
+    # the Google Docs UI shows many visible version-history rows. Do NOT fail
+    # only because len(revisions) < 2. If we can find a writer snapshot, we can
+    # still compare that writer handoff against the current Google Doc text.
+    if not revisions:
         return None, None, None, None, "not_enough_revisions"
 
     ordered = sorted(revisions, key=_rev_sort_key_global)
@@ -1318,6 +1322,21 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
         return None, None, None, None, "writer_and_editor_not_found_in_revisions"
     if not writer_matches:
         return None, None, None, None, "writer_not_found_in_revisions"
+
+    # Single-exportable-revision fallback:
+    # If Drive exposes only one revision but that revision belongs to the writer,
+    # treat it as the writer handoff and compare it with the current document text.
+    # This follows the QA rule: latest writer version BEFORE editor/current work
+    # vs editor/current final, while ignoring any later writer-owned Drive label
+    # that Google may group into the current visible version.
+    if len(ordered) == 1 and current_text:
+        writer_rev = ordered[writer_matches[-1]]
+        writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev.get("id"))
+        editor_text = current_text
+        editor_rev = _current_file_revision_stub(current_file_meta)
+        if writer_text and editor_text and normalize_for_compare(writer_text) != normalize_for_compare(editor_text):
+            return writer_text, editor_text, writer_rev, editor_rev, "single_writer_revision_vs_current_doc"
+        return None, None, writer_rev, editor_rev, "single_revision_same_as_current_doc"
 
     # Important Google Docs edge case:
     # Drive revisions().list() may show/export only older saved revisions, while
@@ -2916,6 +2935,7 @@ def page_gdoc_submit():
         "editor_session_writer_handoff_vs_editor_final",
         "editor_session_writer_handoff_vs_current_editor_doc",
         "editor_not_in_drive_revisions_used_current_doc_text",
+        "single_writer_revision_vs_current_doc",
     }
     if handoff_status not in successful_handoff_statuses:
         st.warning(
