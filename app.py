@@ -1288,32 +1288,54 @@ def _revision_tokens(value):
 
 
 def _name_matches_revision_user(name, revision):
-    """Tolerant matching for display names/emails in Drive revisions."""
+    """Very tolerant matching for display names/emails in Drive revisions.
+
+    Google Drive can expose a shorter display name than Google Docs UI
+    (for example: "Areej Abu Reida" instead of "Areej Tawfiq Abu Reida",
+    or only an email/local-part). The old matcher required nearly every token
+    and could miss the editor, causing fake 100/100 results.
+    """
     needle = _normalise_revision_name(name)
-    if not needle:
-        return False
-    label = _normalise_revision_name(_revision_user_label(revision))
-    if not label:
+    label_raw = _revision_user_label(revision)
+    label = _normalise_revision_name(label_raw)
+    if not needle or not label:
         return False
 
     if needle in label or label in needle:
         return True
 
     needle_tokens = _revision_tokens(name)
-    label_tokens = _revision_tokens(_revision_user_label(revision))
-
-    # Allow apostrophe/punctuation differences: Sana'a Yousef, Sanaa Yousef, Sana Yousef.
+    label_tokens = _revision_tokens(label_raw)
     if not needle_tokens or not label_tokens:
         return False
+
+    # Email/local-part support: areej.tawfiq@... should match Areej Tawfiq Abu Reida.
+    raw_lower = str(label_raw or "").lower()
+    email_match = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+", raw_lower)
+    if email_match:
+        local_tokens = [t for t in re.split(r"[._+\-@]+", email_match.group(0).split("@", 1)[0]) if t]
+        if local_tokens:
+            shared_local = sum(1 for nt in needle_tokens if any(nt == lt or nt in lt or lt in nt for lt in local_tokens))
+            if shared_local >= 1 and (len(needle_tokens) <= 2 or shared_local >= 2):
+                return True
 
     matched = 0
     for nt in needle_tokens:
         if any(nt == lt or nt in lt or lt in nt for lt in label_tokens):
             matched += 1
 
-    # For two-part names, require both parts. For longer names, allow one missing token.
-    required = len(needle_tokens) if len(needle_tokens) <= 2 else len(needle_tokens) - 1
-    return matched >= required
+    # First-name + any family token is enough for long names.
+    # Example: "Areej Tawfiq Abu Reida" matches "Areej Abu Reida".
+    if len(needle_tokens) >= 3:
+        first_ok = any(needle_tokens[0] == lt or needle_tokens[0] in lt or lt in needle_tokens[0] for lt in label_tokens)
+        last_ok = any(nt == lt or nt in lt or lt in nt for nt in needle_tokens[1:] for lt in label_tokens)
+        if first_ok and last_ok:
+            return True
+        return matched >= 2
+
+    # For two-token names, both tokens usually need to match.
+    # But allow a strong single-token match when the Drive label is only an email local part.
+    return matched >= min(len(needle_tokens), 2)
 
 
 def _current_file_matches_revision_user(name, current_file_meta):
@@ -1419,6 +1441,21 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
         return writer_text, editor_text, writer_rev, editor_rev, "editor_not_in_drive_revisions_used_current_doc_text"
 
     if not editor_matches:
+        # Google Docs UI often shows editor saves that Drive revisions().list()
+        # does not expose with lastModifyingUser. Do not fail into fake 100/100.
+        # Best available comparison: writer handoff BEFORE the current/live state
+        # vs the current Google Doc text. This catches the editor's silent edits
+        # when the current text still reflects the editor final, even if the
+        # current version is grouped under the writer.
+        if current_text:
+            writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta)
+            if writer_handoff_idx is not None:
+                writer_rev = ordered[writer_handoff_idx]
+                writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev.get("id"))
+                editor_text = current_text
+                editor_rev = _current_file_revision_stub(current_file_meta)
+                if writer_text and editor_text:
+                    return writer_text, editor_text, writer_rev, editor_rev, "editor_not_in_drive_revisions_used_current_doc_proxy"
         return None, None, None, None, "editor_not_found_in_revisions"
 
     candidates = []
@@ -2013,10 +2050,12 @@ def _current_revision_index_in_ordered(ordered, current_file_meta):
 
 def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta):
     """
-    When the editor's final version is the current Google Doc text, do NOT use
-    the current live revision as the writer handoff just because Drive labels the
-    current grouped version with the writer's name. Use the latest writer version
-    BEFORE the current grouped/live version.
+    Select the writer handoff BEFORE the current/live document state.
+
+    Google Docs can show the current grouped version under the writer after the
+    editor has already edited the document. If we accidentally use that current
+    writer-labelled save as the writer handoff, the app compares the document to
+    itself and returns fake 100/100. This function avoids that.
     """
     if not writer_matches:
         return None
@@ -2026,6 +2065,17 @@ def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, curren
         before_current = [i for i in writer_matches if i < current_idx]
         if before_current:
             return before_current[-1]
+
+    # If the latest writer match appears to be the same Google user as the live
+    # document's last modifier, treat it as a post-editor/current save and step
+    # one writer snapshot back when possible.
+    try:
+        current_user = (current_file_meta or {}).get("lastModifyingUser", {}) or {}
+        latest_writer_user = (ordered[writer_matches[-1]].get("lastModifyingUser", {}) or {})
+        if len(writer_matches) >= 2 and _same_google_user(latest_writer_user, current_user):
+            return writer_matches[-2]
+    except Exception:
+        pass
 
     return writer_matches[-1]
 
@@ -3002,6 +3052,7 @@ def page_gdoc_submit():
         "editor_not_in_drive_revisions_used_current_doc_text",
         "single_writer_revision_vs_current_doc",
         "writer_handoff_vs_current_doc_safety_fallback",
+        "editor_not_in_drive_revisions_used_current_doc_proxy",
     }
     if handoff_status not in successful_handoff_statuses:
         st.warning(
