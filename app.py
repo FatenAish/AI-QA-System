@@ -506,7 +506,8 @@ def export_revision_text(drive_svc, creds, doc_id, revision_id):
         rev = drive_svc.revisions().get(
             fileId=doc_id,
             revisionId=revision_id,
-            fields="exportLinks"
+            fields="exportLinks",
+            supportsAllDrives=True,
         ).execute()
         export_url = rev.get("exportLinks", {}).get("text/plain", "")
         if not export_url:
@@ -2217,7 +2218,8 @@ def fetch_google_doc(url):
             params = dict(
                 fileId=doc_id,
                 fields="nextPageToken,revisions(id,modifiedTime,lastModifyingUser,exportLinks)",
-                pageSize=200,
+                pageSize=1000,
+                supportsAllDrives=True,
             )
             if page_token:
                 params["pageToken"] = page_token
@@ -2805,7 +2807,7 @@ def page_gdoc_submit():
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
   <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
-  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Latest writer vs editor version scored</div><div class="timeline-sub">Compares and scores actual text differences automatically.</div></div></div>
+  <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Writer handoff vs editor final scored</div><div class="timeline-sub">Compares the writer handoff against the editor final text automatically.</div></div></div>
 </div>
 <div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a private/restricted Google Doc. Public “Anyone with the link” docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
 
@@ -2877,22 +2879,24 @@ def page_gdoc_submit():
         writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
 
         if handoff_writer_text and handoff_editor_text:
-            # First try to read every exportable snapshot inside the selected
-            # writer→editor session. This prevents Google Docs grouped version
-            # history from collapsing many silent edits into only one or two net
-            # final differences.
-            diff_changes = compute_editor_session_revision_diffs(
+            # Compare in two ways and merge the results:
+            # 1) every exportable snapshot inside the selected writer→editor session
+            # 2) the final endpoint diff: writer handoff → editor final
+            #
+            # Google Docs sometimes groups many visible edits under one current
+            # version. Consecutive snapshots catch step-by-step saves when the API
+            # exposes them; endpoint diff catches net edits when Google collapses
+            # the internal rows. Using both prevents false 100/100 results and
+            # avoids reports that show only one or two edits when more text changed.
+            session_changes = compute_editor_session_revision_diffs(
                 parsed["drive_svc"], parsed["svc_creds"], extract_doc_id(doc_url),
                 parsed["revisions"], handoff_writer_rev, handoff_editor_rev,
                 handoff_editor_text, lang,
             )
-
-            # If Google Drive exposes only the two endpoint exports, fall back to
-            # the endpoint comparison with Arabic word-level detection.
-            if not diff_changes:
-                diff_changes = _prepare_arabic_or_normal_changes(
-                    handoff_writer_text, handoff_editor_text, lang
-                )
+            endpoint_changes = _prepare_arabic_or_normal_changes(
+                handoff_writer_text, handoff_editor_text, lang
+            )
+            diff_changes = merge_diff_changes(session_changes, endpoint_changes)
 
             if diff_changes:
                 prog.progress(60, text="Classifying and scoring silent edits…")
@@ -2915,7 +2919,7 @@ def page_gdoc_submit():
     }
     if handoff_status not in successful_handoff_statuses:
         st.warning(
-            "Could not compare silent edits because the app could not find the writer handoff revision before the editor session and the editor final revision before the writer returned. "
+            "Could not compare silent edits because Google Drive did not expose enough exportable revision text for the selected writer/editor session. "
             f"Status: {handoff_status}. Open Google Docs version history and make sure the Writer name and Subeditor / editor name exactly match the saved version owners. "
             "If the writer did not directly save a version in this Google Doc, silent edits cannot be scored from revision history."
         )
