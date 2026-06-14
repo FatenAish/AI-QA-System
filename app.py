@@ -1329,7 +1329,9 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     # vs
     # current live Google Doc text by the editor.
     if current_can_be_editor_final:
-        writer_handoff_idx = writer_matches[-1]
+        writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta)
+        if writer_handoff_idx is None:
+            return None, None, None, None, "writer_not_found_before_current_editor_doc"
         writer_rev = ordered[writer_handoff_idx]
         writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev["id"])
         editor_text = current_text
@@ -1882,6 +1884,182 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         return fallback, first_rev, last_rev
 
     return all_changes, exported[0][0], exported[-1][0]
+
+
+
+def _revision_id(value):
+    return str((value or {}).get("id", ""))
+
+
+def _same_revision_id(a, b):
+    return bool(a) and bool(b) and str(a) == str(b)
+
+
+def _same_google_user(user_a, user_b):
+    """Best-effort comparison for Drive user objects."""
+    user_a = user_a or {}
+    user_b = user_b or {}
+    email_a = str(user_a.get("emailAddress", "")).strip().lower()
+    email_b = str(user_b.get("emailAddress", "")).strip().lower()
+    if email_a and email_b and email_a == email_b:
+        return True
+    name_a = _normalise_revision_name(user_a.get("displayName", ""))
+    name_b = _normalise_revision_name(user_b.get("displayName", ""))
+    return bool(name_a and name_b and (name_a == name_b or name_a in name_b or name_b in name_a))
+
+
+def _current_revision_index_in_ordered(ordered, current_file_meta):
+    """
+    Return the index of the Drive revision that appears to be the live/current
+    Google Doc snapshot. Google Docs UI can group several people's edits under
+    one current version, while Drive exposes only one lastModifyingUser.
+    """
+    if not ordered or not current_file_meta:
+        return None
+
+    current_modified = str(current_file_meta.get("modifiedTime", "") or "")
+    if current_modified:
+        for i in range(len(ordered) - 1, -1, -1):
+            rev_modified = str(ordered[i].get("modifiedTime", "") or "")
+            # Seconds-level match is enough; Google APIs use RFC3339 strings.
+            if rev_modified and rev_modified[:19] == current_modified[:19]:
+                return i
+
+    latest = ordered[-1]
+    if _same_google_user(
+        (latest.get("lastModifyingUser", {}) or {}),
+        (current_file_meta.get("lastModifyingUser", {}) or {}),
+    ):
+        return len(ordered) - 1
+
+    return None
+
+
+def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta):
+    """
+    When the editor's final version is the current Google Doc text, do NOT use
+    the current live revision as the writer handoff just because Drive labels the
+    current grouped version with the writer's name. Use the latest writer version
+    BEFORE the current grouped/live version.
+    """
+    if not writer_matches:
+        return None
+
+    current_idx = _current_revision_index_in_ordered(ordered, current_file_meta)
+    if current_idx is not None:
+        before_current = [i for i in writer_matches if i < current_idx]
+        if before_current:
+            return before_current[-1]
+
+    return writer_matches[-1]
+
+
+def _prepare_arabic_or_normal_changes(writer_text, editor_text, lang):
+    """Run the same paragraph + Arabic token-level diff pipeline in one place."""
+    changes = compute_diff(writer_text, editor_text)
+    if lang == "Arabic" or changes_contain_arabic(changes):
+        paragraph_micro_changes = _split_arabic_large_changes(changes)
+        paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
+        document_token_changes = compute_document_level_token_edits(writer_text, editor_text, "Arabic")
+        changes = merge_diff_changes(paragraph_micro_changes, document_token_changes)
+        changes = _dedupe_diff_changes(changes)
+    elif should_use_arabic_micro_edits(changes, lang):
+        changes = _split_arabic_large_changes(changes)
+        changes = explode_changes_to_micro_edits(changes, "Arabic")
+        changes = _dedupe_diff_changes(changes)
+    return changes
+
+
+def compute_editor_session_revision_diffs(drive_svc, creds, doc_id, revisions, writer_rev, editor_rev, editor_final_text, lang):
+    """
+    Read ALL text changes inside the selected editor session, not only the final
+    net difference between writer handoff and editor final.
+
+    Why:
+    Google Docs can show many edits inside one visible version history group. A
+    final-vs-final diff may collapse dozens of edits into only one or two net
+    differences, especially when paragraphs are rewritten, then partly adjusted
+    again. This function compares consecutive exportable snapshots from the
+    writer handoff until the editor final/current doc text.
+    """
+    if not revisions or not writer_rev or not editor_rev:
+        return []
+
+    ordered = sorted(revisions, key=_rev_sort_key_global)
+    writer_id = _revision_id(writer_rev)
+    editor_id = _revision_id(editor_rev)
+
+    start_idx = next((i for i, r in enumerate(ordered) if _same_revision_id(r.get("id"), writer_id)), None)
+    if start_idx is None:
+        return []
+
+    editor_is_current_doc = bool(editor_rev.get("is_current_doc_text")) or editor_id == "current_google_doc_text"
+    if editor_is_current_doc:
+        # Include all available exportable revisions after the writer handoff,
+        # then append the live current Google Doc text as the final snapshot.
+        end_idx = len(ordered) - 1
+    else:
+        end_idx = next((i for i, r in enumerate(ordered) if _same_revision_id(r.get("id"), editor_id)), None)
+        if end_idx is None:
+            return []
+
+    if end_idx < start_idx:
+        return []
+
+    exported = []
+    for rev in ordered[start_idx:end_idx + 1]:
+        txt = export_revision_text(drive_svc, creds, doc_id, rev.get("id"))
+        if txt and txt.strip():
+            if not exported or normalize_for_compare(exported[-1][1]) != normalize_for_compare(txt):
+                exported.append((rev, txt))
+
+    if editor_is_current_doc and editor_final_text and editor_final_text.strip():
+        if not exported or normalize_for_compare(exported[-1][1]) != normalize_for_compare(editor_final_text):
+            exported.append((editor_rev, editor_final_text))
+
+    if len(exported) < 2:
+        return []
+
+    all_changes = []
+    pair_no = 0
+    for idx in range(1, len(exported)):
+        prev_rev, prev_text = exported[idx - 1]
+        cur_rev, cur_text = exported[idx]
+        if normalize_for_compare(prev_text) == normalize_for_compare(cur_text):
+            continue
+
+        pair_changes = _prepare_arabic_or_normal_changes(prev_text, cur_text, lang)
+        if not pair_changes:
+            continue
+
+        pair_no += 1
+        for ch in pair_changes:
+            ch["revision_from"] = prev_rev.get("id")
+            ch["revision_to"] = cur_rev.get("id")
+            ch["revision_time"] = cur_rev.get("modifiedTime", "")
+            ch["revision_user"] = (cur_rev.get("lastModifyingUser", {}) or {}).get("displayName", "")
+            ch["revision_pair_number"] = pair_no
+        all_changes.extend(pair_changes)
+
+    # Keep separate contexts, but remove exact duplicate artifacts from the same
+    # export behavior. Do not collapse different contexts of the same correction.
+    cleaned = []
+    seen = set()
+    for ch in all_changes:
+        old_norm = normalize_for_compare(ch.get("original", ""))
+        new_norm = normalize_for_compare(ch.get("revised", ""))
+        old_ctx = normalize_for_compare(ch.get("original_context", ch.get("original", "")))
+        new_ctx = normalize_for_compare(ch.get("revised_context", ch.get("revised", "")))
+        if not old_norm and not new_norm:
+            continue
+        if old_norm == new_norm:
+            continue
+        key = (ch.get("revision_from"), ch.get("revision_to"), old_norm, new_norm, old_ctx[:120], new_ctx[:120])
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(ch)
+    return cleaned
 
 def extract_text_from_gdoc(doc):
     text, headings = [], []
@@ -2699,24 +2877,23 @@ def page_gdoc_submit():
         writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
 
         if handoff_writer_text and handoff_editor_text:
-            diff_changes = compute_diff(handoff_writer_text, handoff_editor_text)
-            if lang == "Arabic" or changes_contain_arabic(diff_changes):
-                # First split paragraph-level Arabic changes into micro edits.
-                paragraph_micro_changes = _split_arabic_large_changes(diff_changes)
-                paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
+            # First try to read every exportable snapshot inside the selected
+            # writer→editor session. This prevents Google Docs grouped version
+            # history from collapsing many silent edits into only one or two net
+            # final differences.
+            diff_changes = compute_editor_session_revision_diffs(
+                parsed["drive_svc"], parsed["svc_creds"], extract_doc_id(doc_url),
+                parsed["revisions"], handoff_writer_rev, handoff_editor_rev,
+                handoff_editor_text, lang,
+            )
 
-                # Then run a full-document token diff so tiny edits inside long
-                # paragraphs are not missed, e.g. "لا يوجد رسوم" -> "لا توجد رسوم".
-                document_token_changes = compute_document_level_token_edits(
-                    handoff_writer_text, handoff_editor_text, "Arabic"
+            # If Google Drive exposes only the two endpoint exports, fall back to
+            # the endpoint comparison with Arabic word-level detection.
+            if not diff_changes:
+                diff_changes = _prepare_arabic_or_normal_changes(
+                    handoff_writer_text, handoff_editor_text, lang
                 )
 
-                diff_changes = merge_diff_changes(paragraph_micro_changes, document_token_changes)
-                diff_changes = _dedupe_diff_changes(diff_changes)
-            elif should_use_arabic_micro_edits(diff_changes, lang):
-                diff_changes = _split_arabic_large_changes(diff_changes)
-                diff_changes = explode_changes_to_micro_edits(diff_changes, "Arabic")
-                diff_changes = _dedupe_diff_changes(diff_changes)
             if diff_changes:
                 prog.progress(60, text="Classifying and scoring silent edits…")
                 diff_classified = classify_diff_changes(
