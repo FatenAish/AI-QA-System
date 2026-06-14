@@ -1290,10 +1290,13 @@ def _revision_tokens(value):
 def _name_matches_revision_user(name, revision):
     """Very tolerant matching for display names/emails in Drive revisions.
 
-    Google Drive can expose a shorter display name than Google Docs UI
-    (for example: "Areej Abu Reida" instead of "Areej Tawfiq Abu Reida",
-    or only an email/local-part). The old matcher required nearly every token
-    and could miss the editor, causing fake 100/100 results.
+    Google Docs version history often displays a full human name, while the Drive
+    Revisions API may expose a shorter display name or only an email/local-part.
+    The QA flow must not miss an editor session just because Drive says
+    "Areej" or "areej@..." while the form says "Areej Tawfiq Abu Reida".
+
+    Matching rules are intentionally tolerant, but still avoid matching tiny
+    initials: a single-token match must be at least 4 characters.
     """
     needle = _normalise_revision_name(name)
     label_raw = _revision_user_label(revision)
@@ -1309,20 +1312,38 @@ def _name_matches_revision_user(name, revision):
     if not needle_tokens or not label_tokens:
         return False
 
+    first_token = needle_tokens[0]
+
+    def strong_token_match(a, b):
+        return bool(a and b and len(a) >= 4 and len(b) >= 4 and (a == b or a in b or b in a))
+
     # Email/local-part support: areej.tawfiq@... should match Areej Tawfiq Abu Reida.
+    # Also allow first-name-only local parts such as areej@bayut.com.
     raw_lower = str(label_raw or "").lower()
     email_match = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+", raw_lower)
     if email_match:
-        local_tokens = [t for t in re.split(r"[._+\-@]+", email_match.group(0).split("@", 1)[0]) if t]
+        local_part = email_match.group(0).split("@", 1)[0]
+        local_tokens = [t for t in re.split(r"[._+\-@]+", local_part) if t]
         if local_tokens:
-            shared_local = sum(1 for nt in needle_tokens if any(nt == lt or nt in lt or lt in nt for lt in local_tokens))
-            if shared_local >= 1 and (len(needle_tokens) <= 2 or shared_local >= 2):
+            shared_local = sum(
+                1 for nt in needle_tokens
+                if any(nt == lt or nt in lt or lt in nt for lt in local_tokens)
+            )
+            if shared_local >= 2:
+                return True
+            if any(strong_token_match(first_token, lt) for lt in local_tokens):
                 return True
 
     matched = 0
     for nt in needle_tokens:
         if any(nt == lt or nt in lt or lt in nt for lt in label_tokens):
             matched += 1
+
+    # Strong first-name-only match. This fixes Drive labels such as "Areej" or
+    # "areej@bayut.com" not matching "Areej Tawfiq Abu Reida".
+    # Do not use this for very short/common initials.
+    if any(strong_token_match(first_token, lt) for lt in label_tokens):
+        return True
 
     # First-name + any family token is enough for long names.
     # Example: "Areej Tawfiq Abu Reida" matches "Areej Abu Reida".
@@ -1333,8 +1354,8 @@ def _name_matches_revision_user(name, revision):
             return True
         return matched >= 2
 
-    # For two-token names, both tokens usually need to match.
-    # But allow a strong single-token match when the Drive label is only an email local part.
+    # For two-token names, both tokens usually need to match, unless one side is
+    # only a strong first-name/email-local-part match.
     return matched >= min(len(needle_tokens), 2)
 
 
