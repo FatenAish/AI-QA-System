@@ -2917,6 +2917,29 @@ def page_gdoc_submit():
             )
             diff_changes = merge_diff_changes(session_changes, endpoint_changes)
 
+            # Safety net for Google Docs/Drive mismatch:
+            # The Google Docs UI may show the editor's saves, while Drive revision
+            # export returns identical/stale text for those revision IDs. If the
+            # strict writer→editor export produces no text differences but the live
+            # Google Doc text is different from the writer handoff, use the live doc
+            # as the editor-final text. This prevents false 100/100 results.
+            #
+            # Important: this is only used when the strict export found nothing.
+            # The primary logic still selects the writer handoff BEFORE the editor
+            # session and ignores later writer saves whenever exportable editor text
+            # is available.
+            current_doc_text = parsed.get("text", "") or ""
+            if (not diff_changes) and current_doc_text and normalize_for_compare(handoff_writer_text) != normalize_for_compare(current_doc_text):
+                current_doc_changes = _prepare_arabic_or_normal_changes(
+                    handoff_writer_text, current_doc_text, lang
+                )
+                if current_doc_changes:
+                    diff_changes = current_doc_changes
+                    diff_source = "writer_handoff_vs_current_doc_safety_fallback"
+                    handoff_status = "writer_handoff_vs_current_doc_safety_fallback"
+                    handoff_editor_rev = _current_file_revision_stub(parsed.get("current_file_meta", {}))
+                    editor_rev = handoff_editor_rev
+
             if diff_changes:
                 prog.progress(60, text="Classifying and scoring silent edits…")
                 diff_classified = classify_diff_changes(
@@ -2925,6 +2948,8 @@ def page_gdoc_submit():
                     effective_diff_language(diff_changes, lang),
                 )
             else:
+                # Do not silently imply that the editor made no changes if the
+                # selected session could not produce readable text differences.
                 diff_classified = []
         else:
             diff_classified = []
@@ -2936,6 +2961,7 @@ def page_gdoc_submit():
         "editor_session_writer_handoff_vs_current_editor_doc",
         "editor_not_in_drive_revisions_used_current_doc_text",
         "single_writer_revision_vs_current_doc",
+        "writer_handoff_vs_current_doc_safety_fallback",
     }
     if handoff_status not in successful_handoff_statuses:
         st.warning(
