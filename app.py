@@ -108,9 +108,10 @@ COMMENT_WEIGHTS = {
     "arabic_language":    {"label": "Arabic language correction", "deduction": 0.6, "color": "#e0f2fe", "tc": "#075985"},
     "grammar":            {"label": "Grammar / phrasing",        "deduction": 0.5, "color": "#f0f4ff", "tc": "#2D4A8A"},
     "rephrase":           {"label": "Rephrase only",             "deduction": 0.3, "color": "#f1f5f9", "tc": "#475569"},
+    "formatting":         {"label": "Formatting only",            "deduction": 0.0, "color": "#f8fafc", "tc": "#64748b"},
 }
 
-LOW_IMPACT_EDIT_TYPES = {"rephrase", "grammar", "arabic_language"}
+LOW_IMPACT_EDIT_TYPES = {"rephrase", "grammar", "arabic_language", "formatting"}
 HIGH_IMPACT_EDIT_TYPES = {"factual", "wrong_info_removed", "source_alignment", "contradiction_fixed", "missing", "missing_info_added"}
 EVENT_ONLY_EDIT_TYPES = {"revision_event"}
 REVISION_ROUND_PENALTY = 0.7  # per extra round
@@ -1036,6 +1037,7 @@ Use ONLY these type values:
 - "grammar" → grammar/spelling/minor phrasing, no factual meaning change
 - "arabic_language" → Arabic grammar, إملاء, صياغة, علامات ترقيم, no factual meaning change
 - "rephrase" → same facts, same meaning, smoother sentence
+- "formatting" → formatting only: bullets, asterisks, line breaks, punctuation separators, spacing, list formatting; no wording/fact change
 - "structural" → section moved, heading fixed, paragraph reorganized, large rewrite without clear fact correction
 - "missing_info_added" → editor added important/source-based info writer missed
 - "missing" → same as missing_info_added when the edit clearly adds required info
@@ -1048,10 +1050,10 @@ Use ONLY these type values:
 
 Important:
 - Do NOT over-penalize simple rewriting.
-- Do NOT classify an edit as factual/source-related only because the paragraph contains prices, ages, locations, tickets, images, amenities, or source-like terms.
-- Use factual/source_alignment ONLY when the factual value itself changed, was added, or was removed: number, price, age, date, URL, location/name, unit type, handover, payment plan, legal/source detail.
-- If prices, ages, ticket details, names and other hard facts stay the same, classify wording/tone changes as rephrase, grammar, or arabic_language.
-- Marketing/style changes such as slogans, adjectives, sentence flow, or brand voice are rephrase unless they change a concrete fact.
+- Do NOT classify an edit as factual/source-related only because the paragraph contains prices, ages, tickets, AED, locations, or source-related terms.
+- Classify as factual/source-related ONLY if the factual value actually changed, was removed, or was corrected.
+- If tickets/prices/ages/locations remain the same and only wording changes, use rephrase/grammar.
+- If the only change is adding bullets, asterisks, separators, line breaks, or punctuation around the same words, use formatting.
 - If old and new facts are the same, use grammar/rephrase/arabic_language.
 - If the fact changed or wrong info was removed, use factual/wrong_info_removed/source_alignment.
 - For delete-only changes, decide whether it is wrong_info_removed, structural, or rephrase cleanup.
@@ -1084,11 +1086,12 @@ Every change must be classified. Use one of: {allowed}.
                 ctype = str(info.get("type", "grammar")).strip()
                 if ctype == "brand_voice":
                     ctype = "rephrase"
-                if ctype == "formatting":
-                    ctype = "grammar"
+                # Keep formatting as its own zero-deduction type.
                 if ctype not in COMMENT_WEIGHTS:
                     ctype = fallback_diff_type(ch, lang)
-                ctype = _guard_high_impact_classification(ctype, ch, lang)
+                ctype = _downgrade_false_factual_type(ch, ctype, lang)
+                if ctype not in COMMENT_WEIGHTS:
+                    ctype = "rephrase"
                 w = COMMENT_WEIGHTS[ctype]
                 severity = info.get("severity") or ("high" if ctype in HIGH_IMPACT_EDIT_TYPES else "low" if ctype in LOW_IMPACT_EDIT_TYPES else "medium")
                 classified.append({
@@ -1111,7 +1114,9 @@ Every change must be classified. Use one of: {allowed}.
     classified = []
     for ch in changes:
         ctype = fallback_diff_type(ch, lang)
-        ctype = _guard_high_impact_classification(ctype, ch, lang)
+        ctype = _downgrade_false_factual_type(ch, ctype, lang)
+        if ctype not in COMMENT_WEIGHTS:
+            ctype = "rephrase"
         w = COMMENT_WEIGHTS[ctype]
         classified.append({
             **ch,
@@ -1135,112 +1140,88 @@ def _number_sets_differ(a, b):
     return set(_extract_numbers_for_fact_check(a)) != set(_extract_numbers_for_fact_check(b))
 
 
-# ── Fact-change guardrails ─────────────────────────────────────────────────
-def _extract_urls_for_fact_check(value):
+def _semantic_tokens_for_formatting(value):
+    """Tokens used to detect pure formatting/separator changes."""
+    value = str(value or "")
+    value = clean_google_doc_export_artifacts(value)
+    # Normalise common Google Docs bullet/list/export separators.
+    value = value.replace("•", " ").replace("*", " ").replace("|", " ")
+    value = re.sub(r"\bImage\s*[-–—:]", "Image ", value, flags=re.IGNORECASE)
+    return [normalize_for_compare(t) for t in _tokenize_for_micro_diff(value) if normalize_for_compare(t)]
+
+
+def _only_formatting_or_separator_change(original, revised):
+    """
+    Return True when the visible text/facts are the same and the edit only adds
+    bullets, separators, asterisks, line breaks, punctuation, or spacing.
+
+    Example:
+    "Tickets: AED 725 Age criteria: All ages" ->
+    "Tickets: AED 725 * Age criteria: All ages"
+    """
+    old_tokens = _semantic_tokens_for_formatting(original)
+    new_tokens = _semantic_tokens_for_formatting(revised)
+    return bool(old_tokens or new_tokens) and old_tokens == new_tokens
+
+
+def _urls_for_fact_check(value):
     return set(re.findall(r"https?://\S+|www\.\S+", str(value or "").lower()))
 
 
-def _extract_currency_amounts_for_fact_check(value):
-    text = str(value or "").lower()
-    # Capture common money patterns such as AED 545, 545 AED, $500, د.إ 500.
-    patterns = []
-    patterns.extend(re.findall(r"(?:aed|د\.إ|درهم)\s*\d+(?:[,.]\d+)?", text))
-    patterns.extend(re.findall(r"\d+(?:[,.]\d+)?\s*(?:aed|د\.إ|درهم)", text))
-    patterns.extend(re.findall(r"[$€£]\s*\d+(?:[,.]\d+)?", text))
-    return set(re.sub(r"\s+", " ", x.strip()) for x in patterns)
+def _facts_meaningfully_changed(original, revised):
+    """Conservative factual-change detector for silent-edit guardrails."""
+    original = str(original or "")
+    revised = str(revised or "")
+    if not original or not revised:
+        # Insertions/deletions may be factual; let the surrounding logic decide.
+        return False
+    if _number_sets_differ(original, revised):
+        return True
+    if _urls_for_fact_check(original) != _urls_for_fact_check(revised):
+        return True
 
-
-def _extract_percentage_values_for_fact_check(value):
-    return set(re.findall(r"\d+(?:[,.]\d+)?\s*%", str(value or "").lower()))
-
-
-def _extract_measurement_values_for_fact_check(value):
-    text = str(value or "").lower()
-    return set(re.findall(
-        r"\d+(?:[,.]\d+)?\s*(?:sq\s*ft|sqft|square feet|sqm|m²|km|kilometres?|kilometers?|minutes?|mins?|hours?|hrs?|years?|yrs?|bedrooms?|br|غرف|غرفة|قدم|متر|دقيقة|دقائق|ساعة|ساعات|سنة|سنوات)",
-        text,
-    ))
-
-
-def _extract_english_named_entities_for_fact_check(value):
-    """Lightweight entity detector for factual-name changes without adding NLP deps."""
-    text = str(value or "")
-    # Keep multi-word title-case entities and all-caps abbreviations. Ignore common labels.
-    ignore = {
-        "These", "Visitors", "Tickets", "Age", "Image", "The", "This", "That",
-        "A", "An", "And", "Or", "But", "In", "On", "At", "For", "With",
+    # Catch obvious short factual value swaps without letting any wording rewrite
+    # become a factual penalty merely because it contains AED/age/tickets.
+    old_tokens = set(_semantic_tokens_for_formatting(original))
+    new_tokens = set(_semantic_tokens_for_formatting(revised))
+    changed = (old_tokens ^ new_tokens)
+    factual_trigger_words = {
+        "aed", "price", "prices", "ticket", "tickets", "age", "ages", "criteria",
+        "location", "developer", "handover", "payment", "bedroom", "bedrooms",
+        "studio", "floor", "floors", "unit", "units", "villa", "villas",
+        "apartment", "apartments", "sqft", "rera", "dld", "url"
     }
-    entities = set()
-    for m in re.finditer(r"\b(?:[A-Z][a-z]+|[A-Z]{2,})(?:\s+(?:[A-Z][a-z]+|[A-Z]{2,}))*\b", text):
-        ent = m.group(0).strip()
-        if ent in ignore:
-            continue
-        # Single common label words should not make a factual difference.
-        if len(ent.split()) == 1 and ent in ignore:
-            continue
-        entities.add(ent.lower())
-    return entities
-
-
-def _extract_fact_fingerprint(value):
-    """Extract concrete factual markers that justify high-impact factual scoring."""
-    return {
-        "numbers": set(_extract_numbers_for_fact_check(value)),
-        "money": _extract_currency_amounts_for_fact_check(value),
-        "percentages": _extract_percentage_values_for_fact_check(value),
-        "measurements": _extract_measurement_values_for_fact_check(value),
-        "urls": _extract_urls_for_fact_check(value),
-        "entities": _extract_english_named_entities_for_fact_check(value),
-    }
-
-
-def _material_fact_changed(original, revised):
-    """
-    Return True only when a concrete factual marker changed.
-
-    This prevents false high-impact classifications when a paragraph contains facts
-    like price/age/location but the editor only improved wording or brand voice.
-    Example: AED 545 and age 8+ remain unchanged, so changing "dolphinastic" to
-    "a treat" is rephrase, not factual.
-    """
-    old_fp = _extract_fact_fingerprint(original)
-    new_fp = _extract_fact_fingerprint(revised)
-
-    # URLs, money, percentages, measurements and numbers are concrete facts.
-    for key in ["urls", "money", "percentages", "measurements", "numbers"]:
-        if old_fp[key] != new_fp[key]:
-            return True
-
-    # Named entity changes can be factual, but ignore when both sides have no entities.
-    if old_fp["entities"] or new_fp["entities"]:
-        if old_fp["entities"] != new_fp["entities"]:
-            return True
-
+    # If factual trigger words are present AND the edit swaps a very small factual
+    # phrase, keep it eligible for factual. Long wording differences are rephrase.
+    combined = old_tokens | new_tokens
+    if combined & factual_trigger_words and 0 < len(changed) <= 4:
+        return True
     return False
 
 
-def _low_impact_type_for_non_factual_edit(change, lang):
-    """Choose a safe low-impact label when the model overcalled factual/source."""
-    original = change.get("original", "") or ""
-    revised = change.get("revised", "") or ""
-    both = f"{original} {revised}"
-    if lang == "Arabic" or re.search(r"[\u0600-\u06FF]", both):
-        return "arabic_language" if token_similarity(original, revised) >= 0.82 else "rephrase"
-    return "grammar" if token_similarity(original, revised) >= 0.92 else "rephrase"
-
-
-def _guard_high_impact_classification(ctype, change, lang):
+def _downgrade_false_factual_type(ch, ctype, lang):
     """
-    Downgrade false factual/source classifications when no concrete fact changed.
-
-    The model may see words like Tickets, AED, age, location or Image and mark the
-    whole paragraph as factual even though those values stayed identical. High-impact
-    labels are allowed only when the changed text actually changes/adds/removes a
-    concrete factual marker.
+    Prevent over-penalising source/factual edits when only wording changed.
+    The AI sometimes sees AED/age/tickets in a paragraph and marks the whole
+    rewrite as factual even though the values are unchanged.
     """
+    original = ch.get("original", "") or ""
+    revised = ch.get("revised", "") or ""
+    tag = ch.get("tag", "")
+
+    if _only_formatting_or_separator_change(original, revised):
+        return "formatting"
+
     if ctype in {"factual", "source_alignment", "contradiction_fixed"}:
-        if not _material_fact_changed(change.get("original", ""), change.get("revised", "")):
-            return _low_impact_type_for_non_factual_edit(change, lang)
+        # Real factual changes must change a value/detail, not only tone or wording.
+        if original and revised and not _facts_meaningfully_changed(original, revised):
+            return fallback_diff_type(ch, lang, skip_formatting_check=True, strict_fact_guard=True)
+
+    # Missing/wrong-info edits are only high-impact for true insert/delete style edits.
+    if ctype in {"wrong_info_removed", "missing", "missing_info_added"}:
+        if original and revised and not _facts_meaningfully_changed(original, revised):
+            return fallback_diff_type(ch, lang, skip_formatting_check=True, strict_fact_guard=True)
+
     return ctype
 
 def _looks_like_comment_artifact(original, revised):
@@ -1263,7 +1244,7 @@ def _looks_like_comment_artifact(original, revised):
 
     return False
 
-def fallback_diff_type(ch, lang):
+def fallback_diff_type(ch, lang, skip_formatting_check=False, strict_fact_guard=False):
     original = ch.get("original", "") or ""
     revised = ch.get("revised", "") or ""
     tag = ch.get("tag", "")
@@ -1276,7 +1257,10 @@ def fallback_diff_type(ch, lang):
         sim = token_similarity(original, revised)
 
     if _looks_like_comment_artifact(original, revised):
-        return "grammar"
+        return "formatting"
+
+    if not skip_formatting_check and _only_formatting_or_separator_change(original, revised):
+        return "formatting"
 
     source_keywords = ["source", "brochure", "developer", "official", "dld", "المصدر", "الكتيب", "المطور", "رسمي", "url", "http"]
     hard_fact_keywords = [
@@ -1316,11 +1300,11 @@ def fallback_diff_type(ch, lang):
                 return "missing_info_added"
             return "rephrase" if len(revised.split()) < 25 else "rephrase"
 
-        if any(k in both for k in source_keywords) and sim < 0.90 and _material_fact_changed(original, revised):
+        if any(k in both for k in source_keywords) and sim < 0.90 and _facts_meaningfully_changed(original, revised):
             return "source_alignment"
 
-        # Only mark factual when concrete factual markers changed.
-        if _material_fact_changed(original, revised) and any(k in both for k in hard_fact_keywords):
+        # Only mark factual when numbers or clearly measurable details changed.
+        if _facts_meaningfully_changed(original, revised) and any(k in both for k in hard_fact_keywords):
             return "factual"
 
         if sim >= 0.82:
@@ -1338,16 +1322,16 @@ def fallback_diff_type(ch, lang):
     ]
 
     if tag == "delete" and len(original.split()) >= 6:
-        if any(k in both for k in fact_keywords + source_keywords) and _material_fact_changed(original, revised):
+        if any(k in both for k in fact_keywords + source_keywords):
             return "wrong_info_removed"
         return "structural" if len(original.split()) > 25 else "rephrase"
     if tag == "insert" and len(revised.split()) >= 6:
-        if any(k in both for k in fact_keywords + source_keywords) and _material_fact_changed(original, revised):
+        if any(k in both for k in fact_keywords + source_keywords):
             return "missing_info_added"
         return "rephrase" if len(revised.split()) > 18 else "rephrase"
-    if any(k in both for k in source_keywords) and sim < 0.92 and _material_fact_changed(original, revised):
+    if any(k in both for k in source_keywords) and sim < 0.92 and _facts_meaningfully_changed(original, revised):
         return "source_alignment"
-    if any(k in both for k in fact_keywords) and sim < 0.88 and _material_fact_changed(original, revised):
+    if any(k in both for k in fact_keywords) and sim < 0.88 and _facts_meaningfully_changed(original, revised):
         return "factual"
     if sim >= 0.90:
         return "grammar"
@@ -2630,12 +2614,12 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
 
 def capped_low_impact_deduction(items):
     """
-    Count every detected silent text edit in the score.
+    Score silent edits with a fair cap for low-impact cleanup.
 
-    Earlier versions capped low-impact edits at 8 points, which meant the edit
-    count could increase while the final score stayed the same. For this QA
-    system, the score must reflect the actual number of detected word/phrase
-    edits, so grammar/rephrase/Arabic-language edits are no longer capped.
+    Factual/source/missing/structural issues always count normally. Pure
+    formatting has 0 deduction. Grammar/rephrase/Arabic-language cleanup is
+    capped at 3 points when there are no high/medium-impact silent edits, so a
+    heavily polished article is not punished like a factual failure.
     """
     events = [d for d in items if d.get("type") in EVENT_ONLY_EDIT_TYPES]
     high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
@@ -2646,28 +2630,35 @@ def capped_low_impact_deduction(items):
     medium_total = sum(float(d.get("deduction", 0)) for d in medium)
     raw_low_total = sum(float(d.get("deduction", 0)) for d in low)
 
-    # No cap: if the system detects more real edits, the score changes.
-    low_total = raw_low_total
+    low_cap = 3.0
+    low_cap_applied = False
+    if high_total == 0 and medium_total == 0 and raw_low_total > low_cap:
+        low_total = low_cap
+        low_cap_applied = True
+    else:
+        low_total = raw_low_total
 
     return high_total + medium_total + low_total, {
         "event_count": len(events),
         "high_count": len(high),
         "medium_count": len(medium),
         "low_count": len(low),
+        "formatting_count": len([d for d in low if d.get("type") == "formatting"]),
         "raw_low_deduction": round(raw_low_total, 1),
-        "low_cap_applied": False,
+        "low_cap_applied": low_cap_applied,
+        "low_cap": low_cap,
         "low_capped_deduction": round(low_total, 1),
-        "low_uncapped_deduction": round(low_total, 1),
+        "low_uncapped_deduction": round(raw_low_total, 1),
     }
 
 def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
     """
     Score = 100 − comment deductions − silent-edit deductions − rounds penalty.
-    Every detected silent text edit is counted; low-impact edits are not capped.
+    Formatting-only edits are 0 points. Low-impact wording/grammar cleanup is capped fairly.
     """
     comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
 
-    # Diff deductions: factual/source changes and low-impact grammar/rephrase edits all count.
+    # Diff deductions: factual/source changes count normally; low-impact cleanup may be capped.
     diff_deduction, diff_summary = capped_low_impact_deduction(diff_classified)
 
     # Rounds penalty
@@ -3291,7 +3282,7 @@ def _edit_report_title(d, idx):
     if typ == "grammar":
         return f"{idx}. Grammar / phrasing edit"
     if typ == "formatting":
-        return f"{idx}. Grammar/phrasing edit"
+        return f"{idx}. Formatting-only edit"
     return f"{idx}. {label}"
 
 
@@ -3356,9 +3347,9 @@ def render_gdoc_report(sub):
         row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
         diff_rows += brow(row_cls, f'Silent edits — {w["label"]} ({len(items)} found)', f'−{round(raw_tot,1)} raw')
     if diff_summary.get("low_count", 0) and not diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
+        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
     elif diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
+        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
 
@@ -3404,14 +3395,14 @@ def render_gdoc_report(sub):
         # Internal API/revision details are intentionally hidden from the report UI.
         if diff_summary.get("low_cap_applied"):
             st.info(
-                f"Low-impact edits were capped: raw low-impact deduction was "
+                f"Low-impact edits were capped fairly: raw low-impact deduction was "
                 f"{diff_summary.get('raw_low_deduction')} pts, counted as "
                 f"{diff_summary.get('low_capped_deduction')} pts."
             )
         elif diff_summary.get("low_count", 0):
             st.info(
-                f"Low-impact edits are not capped: all "
-                f"{diff_summary.get('low_count')} grammar/rephrase edits were counted "
+                f"Low-impact edits counted: "
+                f"{diff_summary.get('low_count')} grammar/rephrase/formatting edits counted "
                 f"for −{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts."
             )
 
