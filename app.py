@@ -1380,6 +1380,14 @@ def _current_file_revision_stub(current_file_meta):
         "is_current_doc_text": True,
     }
 
+
+def _count_matching_revisions(revisions, name):
+    """Count revisions whose lastModifyingUser matches the given form name."""
+    try:
+        return sum(1 for r in (revisions or []) if _name_matches_revision_user(name, r))
+    except Exception:
+        return 0
+
 def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor_name, revisions, current_text=None, current_file_meta=None):
     """
     Correct QA silent-edit comparison by editor session:
@@ -1448,7 +1456,7 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     # vs
     # current live Google Doc text by the editor.
     if current_can_be_editor_final:
-        writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta)
+        writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta, writer_name)
         if writer_handoff_idx is None:
             return None, None, None, None, "writer_not_found_before_current_editor_doc"
         writer_rev = ordered[writer_handoff_idx]
@@ -1469,7 +1477,7 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
         # when the current text still reflects the editor final, even if the
         # current version is grouped under the writer.
         if current_text:
-            writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta)
+            writer_handoff_idx = _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta, writer_name)
             if writer_handoff_idx is not None:
                 writer_rev = ordered[writer_handoff_idx]
                 writer_text = export_revision_text(drive_svc, creds, doc_id, writer_rev.get("id"))
@@ -2069,14 +2077,20 @@ def _current_revision_index_in_ordered(ordered, current_file_meta):
     return None
 
 
-def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta):
+def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, current_file_meta, writer_name=""):
     """
     Select the writer handoff BEFORE the current/live document state.
 
-    Google Docs can show the current grouped version under the writer after the
-    editor has already edited the document. If we accidentally use that current
-    writer-labelled save as the writer handoff, the app compares the document to
-    itself and returns fake 100/100. This function avoids that.
+    Critical rule for QA:
+    - If the writer appears again after the editor, that later writer save must
+      NOT become the handoff version.
+    - The handoff is the last writer snapshot before the editor/current work.
+
+    Google Drive sometimes exposes the current Google Doc as a writer-owned
+    revision even when the visible Google Docs history shows an editor session
+    before it. This function aggressively steps back one writer snapshot when
+    the live/current file owner matches the writer. That prevents false 100/100
+    results caused by comparing the current document to itself.
     """
     if not writer_matches:
         return None
@@ -2087,13 +2101,21 @@ def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, curren
         if before_current:
             return before_current[-1]
 
-    # If the latest writer match appears to be the same Google user as the live
-    # document's last modifier, treat it as a post-editor/current save and step
-    # one writer snapshot back when possible.
     try:
         current_user = (current_file_meta or {}).get("lastModifyingUser", {}) or {}
         latest_writer_user = (ordered[writer_matches[-1]].get("lastModifyingUser", {}) or {})
-        if len(writer_matches) >= 2 and _same_google_user(latest_writer_user, current_user):
+        current_stub = {"lastModifyingUser": current_user}
+
+        current_is_writer = False
+        if writer_name:
+            current_is_writer = _name_matches_revision_user(writer_name, current_stub)
+        if not current_is_writer:
+            current_is_writer = _same_google_user(latest_writer_user, current_user)
+
+        # If the live/current Google Doc is attributed to the writer, the latest
+        # writer revision is likely a post-editor save/grouped current snapshot.
+        # Use the previous writer revision as the handoff when available.
+        if len(writer_matches) >= 2 and current_is_writer:
             return writer_matches[-2]
     except Exception:
         pass
@@ -3040,11 +3062,25 @@ def page_gdoc_submit():
             # session and ignores later writer saves whenever exportable editor text
             # is available.
             current_doc_text = parsed.get("text", "") or ""
-            if (not diff_changes) and current_doc_text and normalize_for_compare(handoff_writer_text) != normalize_for_compare(current_doc_text):
+            if current_doc_text and normalize_for_compare(handoff_writer_text) != normalize_for_compare(current_doc_text):
                 current_doc_changes = _prepare_arabic_or_normal_changes(
                     handoff_writer_text, current_doc_text, lang
                 )
-                if current_doc_changes:
+
+                # Google Drive can export only two tiny endpoint changes even
+                # when the Google Docs UI shows a full editor session. When the
+                # live document contains a larger diff from the writer handoff,
+                # use the larger diff. This prevents the repeated false result
+                # of "2 edits / 100 score".
+                editor_revision_count = _count_matching_revisions(parsed.get("revisions", []), editor_name)
+                suspiciously_low = len(diff_changes or []) <= 2 and len(current_doc_changes or []) > len(diff_changes or [])
+                has_visible_editor_session = editor_revision_count >= 2 or handoff_status in {
+                    "editor_not_in_drive_revisions_used_current_doc_proxy",
+                    "editor_not_in_drive_revisions_used_current_doc_text",
+                    "single_writer_revision_vs_current_doc",
+                }
+
+                if current_doc_changes and ((not diff_changes) or (suspiciously_low and has_visible_editor_session)):
                     diff_changes = current_doc_changes
                     diff_source = "writer_handoff_vs_current_doc_safety_fallback"
                     handoff_status = "writer_handoff_vs_current_doc_safety_fallback"
@@ -3091,6 +3127,17 @@ def page_gdoc_submit():
     final_score, deductions = apply_gdoc_deductions_full(
         classified, diff_classified, editor_rounds
     )
+
+    # Never present a clean 100/100 when silent-edit audit failed.
+    # If Google did not expose enough revision text, the result needs manual QA,
+    # not automatic approval. This avoids fake perfect scores.
+    if handoff_status not in successful_handoff_statuses and not diff_classified:
+        final_score = min(final_score, 85.0)
+        deductions.setdefault("breakdown", []).append({
+            "type": "silent_audit_unavailable",
+            "label": "Silent edit audit unavailable — manual QA required",
+            "deduction": round(100 - final_score, 2),
+        })
     recommendation = get_recommendation(final_score)
 
     prog.progress(88, text="Getting AI feedback…")
@@ -3308,7 +3355,7 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits — {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
+            st.caption("These are the actual text differences between the writer handoff version and the editor final version. The system may count several small changes inside one paragraph as separate edits.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
