@@ -2742,14 +2742,8 @@ def page_gdoc_submit():
             f"Status: {handoff_status}. Open Google Docs version history and make sure the Writer name and Subeditor / editor name exactly match the saved version owners. "
             "If the writer did not directly save a version in this Google Doc, silent edits cannot be scored from revision history."
         )
-    elif handoff_status == "editor_session_writer_handoff_vs_current_editor_doc":
-        st.info(
-            "Silent edits compared using current Google Doc text as the editor final version, because the editor's latest visible version is the current document and may not be exportable as a separate Drive revision."
-        )
-    elif handoff_status == "editor_not_in_drive_revisions_used_current_doc_text":
-        st.info(
-            "The editor name was not exposed in Drive revisions, so the app used the current Google Doc text as the editor final version and compared it against the writer's latest saved handoff revision."
-        )
+    # Successful fallback statuses are intentionally not shown to users.
+    # The report should stay clean and only show warnings when silent edit comparison fails.
 
     prog.progress(65, text="Classifying editor comments with AI…")
     classified = classify_comments_ai(comments, platform, lang)
