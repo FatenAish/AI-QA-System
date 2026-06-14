@@ -1261,13 +1261,17 @@ def _name_matches_revision_user(name, revision):
 
 def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor_name, revisions):
     """
-    Strict silent-edit comparison:
-    compare the writer's LAST available version before the editor's LAST version.
+    Correct QA silent-edit comparison by editor session:
 
-    This avoids misleading fallback comparisons such as current-vs-previous or
-    oldest-vs-latest. If the writer version is not exposed by Google Drive
-    revision history, the function returns a clear status instead of inventing
-    a comparison.
+    Compare:
+    1) the writer's LAST version BEFORE the editor started editing
+    vs
+    2) the editor's LAST version BEFORE the writer touched/saved the doc again.
+
+    This handles cases where the writer later opens/saves the document after the
+    editor. In that situation, comparing the latest writer version against the
+    latest editor version is wrong because the latest writer version is no longer
+    the original handoff version.
     """
     if not revisions or len(revisions) < 2:
         return None, None, None, None, "not_enough_revisions"
@@ -1283,15 +1287,52 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     if not editor_matches:
         return None, None, None, None, "editor_not_found_in_revisions"
 
-    editor_idx = editor_matches[-1]  # last version by editor
-    writer_before_editor = [i for i in writer_matches if i < editor_idx]
+    candidates = []
 
-    if not writer_before_editor:
-        return None, None, None, None, "no_writer_revision_before_last_editor_revision"
+    # Find every possible editor session. An editor session starts at an editor
+    # revision that has a writer revision before it. It ends at the last editor
+    # revision before the writer's next revision/save.
+    for editor_start_idx in editor_matches:
+        writer_before = [i for i in writer_matches if i < editor_start_idx]
+        if not writer_before:
+            continue
 
-    writer_idx = writer_before_editor[-1]  # last writer version before editor's final version
-    writer_rev = ordered[writer_idx]
-    editor_rev = ordered[editor_idx]
+        writer_handoff_idx = writer_before[-1]
+        next_writer_after_editor_start = next(
+            (i for i in writer_matches if i > editor_start_idx),
+            None,
+        )
+
+        if next_writer_after_editor_start is None:
+            session_editor_indices = [i for i in editor_matches if i >= editor_start_idx]
+        else:
+            session_editor_indices = [
+                i for i in editor_matches
+                if editor_start_idx <= i < next_writer_after_editor_start
+            ]
+
+        if not session_editor_indices:
+            continue
+
+        editor_final_idx = session_editor_indices[-1]
+        candidates.append({
+            "writer_idx": writer_handoff_idx,
+            "editor_start_idx": editor_start_idx,
+            "editor_idx": editor_final_idx,
+            "writer_return_idx": next_writer_after_editor_start,
+        })
+
+    if not candidates:
+        return None, None, None, None, "no_writer_handoff_before_editor_session"
+
+    # Use the latest completed/editor session. This means:
+    # - if the current doc is still at the editor's final version, use that session;
+    # - if the writer saved/touched the doc again after the editor, still use the
+    #   editor's last version before that writer return.
+    chosen = sorted(candidates, key=lambda x: (x["editor_idx"], x["editor_start_idx"]))[-1]
+
+    writer_rev = ordered[chosen["writer_idx"]]
+    editor_rev = ordered[chosen["editor_idx"]]
 
     if writer_rev.get("id") == editor_rev.get("id"):
         return None, None, None, None, "same_writer_and_editor_revision"
@@ -1302,8 +1343,7 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
     if not writer_text or not editor_text:
         return None, None, writer_rev, editor_rev, "could_not_export_writer_or_editor_revision"
 
-    return writer_text, editor_text, writer_rev, editor_rev, "editor_handoff_last_writer_vs_last_editor"
-
+    return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_editor_final"
 
 
 def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor_name, revisions):
@@ -2500,13 +2540,13 @@ def page_gdoc_submit():
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
-                # writer's latest available version vs editor's latest available version.
+                # writer handoff before editor session vs editor final version before writer return.
                 manual_revision_history = ""
                 manual_visible_revision_count = 0
 
                 # Silent edit logic is fixed to editor handoff only:
-                # writer's latest available version vs editor's latest available version.
-                silent_compare_mode = "Editor handoff: last writer version vs last editor version"
+                # writer handoff before editor session vs editor final version before writer return.
+                silent_compare_mode = "Editor session: writer handoff before editor edits vs editor final before writer returns"
 
                 st.markdown(f"""
 <div class="precheck">
@@ -2569,7 +2609,7 @@ def page_gdoc_submit():
 
     diff_changes    = []
     diff_classified = []
-    diff_source     = "strict_last_writer_vs_last_editor"
+    diff_source     = "editor_session_writer_handoff_vs_editor_final"
     revision_activity_events = []
     revision_activity_source = "editor_handoff_only"
     google_api_revision_activity_count = 0
@@ -2583,7 +2623,7 @@ def page_gdoc_submit():
     # misleading 100/100 results.
     handoff_status = "not_run"
     if parsed.get("revisions"):
-        prog.progress(50, text="Comparing last writer version vs last editor version…")
+        prog.progress(50, text="Comparing writer handoff vs editor final session version…")
         handoff_writer_text, handoff_editor_text, handoff_writer_rev, handoff_editor_rev, handoff_status = fetch_editor_handoff_revisions(
             parsed["drive_svc"], parsed["svc_creds"],
             extract_doc_id(doc_url), writer, editor_name, parsed["revisions"]
@@ -2624,9 +2664,9 @@ def page_gdoc_submit():
     else:
         handoff_status = "not_enough_revisions"
 
-    if handoff_status != "editor_handoff_last_writer_vs_last_editor":
+    if handoff_status != "editor_session_writer_handoff_vs_editor_final":
         st.warning(
-            "Could not compare silent edits because the app could not find the writer's last revision before the editor's last revision. "
+            "Could not compare silent edits because the app could not find the writer handoff revision before the editor session and the editor final revision before the writer returned. "
             f"Status: {handoff_status}. Open Google Docs version history and make sure the Writer name and Subeditor / editor name exactly match the saved version owners. "
             "If the writer did not directly save a version in this Google Doc, silent edits cannot be scored from revision history."
         )
@@ -2824,8 +2864,8 @@ def render_gdoc_report(sub):
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
-        is_handoff = sub.get("diff_source") == "editor_handoff_last_writer_vs_last_editor"
-        mode_label = "Editor edits to writer's last version" if is_handoff else "Silent editor activity"
+        is_handoff = sub.get("diff_source") in {"editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor"}
+        mode_label = "Editor edits to writer handoff version" if is_handoff else "Silent editor activity"
         if is_handoff:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
