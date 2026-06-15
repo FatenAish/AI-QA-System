@@ -1181,9 +1181,9 @@ def merge_diff_changes(*change_groups):
 
     Earlier builds appended paragraph diff, token diff, session diff and endpoint
     diff together. That made the same edit block appear two or three times in
-    the report and inflated the score deduction. This helper now removes duplicate
-    rows across diff sources while keeping repeated edits that happen in different
-    nearby contexts.
+    the report and inflated the score deduction. This helper now treats the same
+    original to revised edit as one QA issue, even when it appears more than once
+    in the article.
     """
     merged = []
     seen = set()
@@ -1207,8 +1207,10 @@ def merge_diff_changes(*change_groups):
             old_ctx = normalize_for_compare(ch.get("original_context", original))
             new_ctx = normalize_for_compare(ch.get("revised_context", revised))
 
-            # Keep repeated corrections only when the surrounding text is different.
-            key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260])
+            # Count each unique edit once across the whole article.
+            # Same original to revised text should not be scored again just because
+            # it appears in another paragraph or another diff source.
+            key = (old_norm[:260], new_norm[:260])
             if key in seen:
                 continue
             seen.add(key)
@@ -1934,8 +1936,8 @@ def _dedupe_diff_changes(changes):
     """
     Remove duplicate raw silent-edit rows before AI classification.
 
-    Same original/revised/context from multiple diff passes must be scored once.
-    The same correction can still be counted more than once when it appears in
+    Same original to revised text must be scored once across the whole article.
+    Repeated identical corrections are shown/scored once even when they appear in
     different surrounding context.
     """
     cleaned = []
@@ -1953,9 +1955,7 @@ def _dedupe_diff_changes(changes):
         if old_norm == new_norm:
             continue
 
-        old_ctx = normalize_for_compare(ch.get("original_context", original))
-        new_ctx = normalize_for_compare(ch.get("revised_context", revised))
-        key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260])
+        key = (old_norm[:260], new_norm[:260])
         if key in seen:
             continue
         seen.add(key)
@@ -1972,8 +1972,9 @@ def _dedupe_classified_diff_edits(diff_classified):
     Remove duplicate classified silent edits and make scoring auditable.
 
     Final score must equal 100 minus the sum of deductions for the rows shown in
-    the report. Therefore every displayed row is scored once, and duplicated rows
-    created by multiple diff passes are removed before scoring.
+    the report. Therefore every displayed unique edit is scored once. Repeated
+    original to revised edits are collapsed globally, even when they happen in
+    different places in the article.
     """
     cleaned = []
     seen = set()
@@ -1993,16 +1994,29 @@ def _dedupe_classified_diff_edits(diff_classified):
         if old_norm == new_norm:
             continue
 
-        old_ctx = normalize_for_compare(d.get("original_context", original))
-        new_ctx = normalize_for_compare(d.get("revised_context", revised))
-        key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260], d.get("type", ""))
-        if key in seen:
-            continue
-        seen.add(key)
+        key = (old_norm[:260], new_norm[:260])
 
         nd = dict(d)
         nd["original"] = original
         nd["revised"] = revised
+
+        # If the same edit was classified differently in repeated diff passes,
+        # keep the stronger deduction once instead of scoring both rows.
+        if key in seen:
+            existing_index = seen[key]
+            try:
+                old_deduction = float(cleaned[existing_index].get("deduction", 0) or 0)
+            except Exception:
+                old_deduction = 0.0
+            try:
+                new_deduction = float(nd.get("deduction", 0) or 0)
+            except Exception:
+                new_deduction = 0.0
+            if new_deduction > old_deduction:
+                cleaned[existing_index] = nd
+            continue
+
+        seen[key] = len(cleaned)
         cleaned.append(nd)
     return cleaned
 
@@ -2330,8 +2344,8 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
     - Compare ALL consecutive Google Doc revisions returned by Drive API.
     - Do NOT filter by editor name here, because many docs have writer/editor activity under
       the same visible Google account name, and filtering can hide real silent edits.
-    - Do NOT dedupe across revision pairs by default, because the user wants every edit event,
-      not only unique final changed blocks.
+    - Score each unique original to revised edit once only, even if the same
+      correction appears again in another revision pair or another place.
     - For Arabic, split large paragraph replacements into micro token-level edits.
     """
     if not revisions or len(revisions) < 2:
@@ -2378,8 +2392,9 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         all_changes = _split_arabic_large_changes(all_changes)
         all_changes = explode_changes_to_micro_edits(all_changes, "Arabic")
 
-    # Keep repeated edits from different revision pairs. Only remove exact empty/identical artifacts.
+    # Count each unique original to revised edit once only.
     cleaned = []
+    seen = set()
     for ch in all_changes:
         old_norm = normalize_for_compare(ch.get("original", ""))
         new_norm = normalize_for_compare(ch.get("revised", ""))
@@ -2387,6 +2402,10 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
             continue
         if old_norm == new_norm:
             continue
+        key = (old_norm[:260], new_norm[:260])
+        if key in seen:
+            continue
+        seen.add(key)
         cleaned.append(ch)
     all_changes = cleaned
 
@@ -2586,20 +2605,17 @@ def compute_editor_session_revision_diffs(drive_svc, creds, doc_id, revisions, w
             ch["revision_pair_number"] = pair_no
         all_changes.extend(pair_changes)
 
-    # Keep separate contexts, but remove exact duplicate artifacts from the same
-    # export behavior. Do not collapse different contexts of the same correction.
+    # Count each unique original to revised edit once only.
     cleaned = []
     seen = set()
     for ch in all_changes:
         old_norm = normalize_for_compare(ch.get("original", ""))
         new_norm = normalize_for_compare(ch.get("revised", ""))
-        old_ctx = normalize_for_compare(ch.get("original_context", ch.get("original", "")))
-        new_ctx = normalize_for_compare(ch.get("revised_context", ch.get("revised", "")))
         if not old_norm and not new_norm:
             continue
         if old_norm == new_norm:
             continue
-        key = (ch.get("revision_from"), ch.get("revision_to"), old_norm, new_norm, old_ctx[:120], new_ctx[:120])
+        key = (old_norm[:260], new_norm[:260])
         if key in seen:
             continue
         seen.add(key)
