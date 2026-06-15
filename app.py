@@ -191,15 +191,8 @@ def _submission_identity(sub):
 
 
 def _sub_widget_key(sub, prefix):
-    """Unique Streamlit widget key for widgets inside full reports.
-
-    The same evaluation can appear more than once in the dashboard when the
-    user reruns the same Google Doc several times, or when old duplicate
-    records already exist in qa_records.json. Streamlit keys must be unique
-    per rendered widget, so dashboard rows pass an internal _render_uid.
-    """
-    render_uid = sub.get("_render_uid") or "single"
-    return f"{prefix}_{_safe_key_part(sub.get('title','Untitled'))}_{_submission_identity(sub)}_{_safe_key_part(render_uid)}"
+    """Unique Streamlit widget key for widgets inside full reports."""
+    return f"{prefix}_{_safe_key_part(sub.get('title','Untitled'))}_{_submission_identity(sub)}"
 
 
 def _record_storage_key(sub):
@@ -3046,7 +3039,7 @@ def page_submit():
 # ── Google Doc submit page ─────────────────────────────────────────────────
 def page_gdoc_submit():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review. Editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
 
     if not GOOGLE_OK:
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
@@ -3073,7 +3066,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the file with: <strong>{get_service_account_email()}</strong></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Keep the Google Doc restricted and share it with: <strong>{get_service_account_email()}</strong> as Editor</div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -3098,10 +3091,10 @@ def page_gdoc_submit():
         st.markdown(f"""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact and source: 3 pts · Wrong info removed: 2 pts · Missing: 1.2 to 1.5 pts · Rephrase: 0.3 pts</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Writer handoff vs editor final scored</div><div class="timeline-sub">Compares the writer handoff against the editor final text automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the file with:<br><strong>{service_email}</strong></div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a private/restricted Google Doc. Public “Anyone with the link” docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
@@ -3467,7 +3460,7 @@ def render_gdoc_report(sub):
         writer_label = (sub.get("writer") or "Writer").strip() or "Writer"
         editor_label = (sub.get("editor_name") or "Editor").strip() or "Editor"
 
-        with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
+        with st.expander(f"View all editor edits — {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
             st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
@@ -3499,7 +3492,7 @@ def render_gdoc_report(sub):
     # Classified comments
     if classified:
         st.divider()
-        with st.expander(f"View editor comments · {len(classified)} found", expanded=False):
+        with st.expander(f"View editor comments — {len(classified)} found", expanded=False):
             for idx, c in enumerate(classified, 1):
                 st.markdown(
                     f'<div class="cmt-card" style="border-left-color:{c["color"]}">'
@@ -3629,7 +3622,7 @@ def _dec_class(d):   return {"Approve":"dec-approve","Request revision":"dec-rev
 
 def page_dashboard():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">Overview</div><h1>Dashboard</h1><p>All evaluation records persisted across sessions.</p></div><div class="qa-hero-icon">📊</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">Overview</div><h1>Dashboard</h1><p>All evaluation records — persisted across sessions.</p></div><div class="qa-hero-icon">📊</div></div>', unsafe_allow_html=True)
     all_subs = st.session_state.get("submissions", [])
     if not all_subs:
         st.info("No evaluations yet. Submit an article to get started."); return
@@ -3696,11 +3689,7 @@ def page_dashboard():
     st.markdown(f"**{len(filtered)} submission{'s' if len(filtered) != 1 else ''}**")
     st.markdown("")
 
-    # Render newest first. Add a per-row render id so repeated/duplicate
-    # evaluations do not reuse the same Streamlit widget keys inside reports.
-    for render_idx, sub in enumerate(reversed(filtered)):
-        sub = dict(sub)
-        sub["_render_uid"] = f"dash_{render_idx}_{_submission_identity(sub)}"
+    for sub in reversed(filtered):
         score     = sub.get("qa_score", 0); dec = sub.get("editor_decision") or "Pending"
         ded       = sub.get("deductions", {})
         cmt_count = ded.get("comment_count", 0); cmt_ded = ded.get("comment_deduction", 0)
@@ -3748,7 +3737,7 @@ def page_dashboard():
   </div>
 </div>""", unsafe_allow_html=True)
 
-        with st.expander(f"View full report · {sub.get('writer','—')} · {sub.get('date','')}"):
+        with st.expander(f"View full report — {sub.get('writer','—')} · {sub.get('date','')}"):
             render_report(sub)
 
 # ── Main ───────────────────────────────────────────────────────────────────
