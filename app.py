@@ -1176,27 +1176,18 @@ def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
 
 
 def merge_diff_changes(*change_groups):
-    """Merge paragraph-level and document-token-level edits without dropping repeated real edits."""
+    """
+    Merge diff outputs without hiding detected edits.
+
+    Paragraph diff and token diff both provide useful evidence. To make the QA
+    math transparent, we keep the detected rows and let the final report score
+    exactly those rows. Empty/artifact rows are filtered later.
+    """
     merged = []
-    seen = set()
     for group in change_groups:
         for ch in group or []:
-            original = normalize_for_compare(ch.get("original", ""))[:250]
-            revised = normalize_for_compare(ch.get("revised", ""))[:250]
-            old_ctx = normalize_for_compare(ch.get("original_context", ""))[:250]
-            new_ctx = normalize_for_compare(ch.get("revised_context", ""))[:250]
-
-            # For micro edits, context matters. The same correction may happen
-            # several times in different sentences and should be counted each time.
-            if ch.get("micro_edit"):
-                key = (ch.get("tag", ""), original, revised, old_ctx, new_ctx)
-            else:
-                key = (ch.get("tag", ""), original, revised)
-
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(ch)
+            if ch:
+                merged.append(ch)
     return merged
 
 
@@ -1910,46 +1901,49 @@ def _revision_user_matches_editor(revision, editor_name):
 
 
 def _dedupe_diff_changes(changes):
-    """Remove duplicate autosave/repeated changes without losing repeated real micro edits."""
-    unique = []
-    seen = set()
+    """
+    Keep every detected edit event.
+
+    Earlier builds removed rows that looked similar, which made the score and
+    report feel inconsistent because the dashboard could say fewer edits than
+    Google Docs visibly changed. For QA scoring we should count what the diff
+    pipeline detected, then make the score equal to the displayed deductions.
+
+    We only drop fully empty rows or obvious Google Docs comment artifacts.
+    The same wording change may appear more than once in an article and must be
+    counted more than once.
+    """
+    cleaned = []
     for ch in changes or []:
-        original = normalize_for_compare(ch.get("original", ""))[:250]
-        revised = normalize_for_compare(ch.get("revised", ""))[:250]
-        if ch.get("micro_edit"):
-            key = (
-                ch.get("tag", ""),
-                original,
-                revised,
-                normalize_for_compare(ch.get("original_context", ""))[:250],
-                normalize_for_compare(ch.get("revised_context", ""))[:250],
-            )
-        else:
-            key = (ch.get("tag", ""), original, revised)
-        if key in seen:
+        original = sanitize_diff_side(ch.get("original", ""))
+        revised = sanitize_diff_side(ch.get("revised", ""))
+        if not original and not revised:
             continue
-        seen.add(key)
-        unique.append(ch)
-    return unique
+        if _looks_like_comment_artifact(original, revised):
+            continue
+        nd = dict(ch)
+        nd["original"] = original
+        nd["revised"] = revised
+        cleaned.append(nd)
+    return cleaned
 
 
 def _dedupe_classified_diff_edits(diff_classified):
     """
-    Clean silent-edit rows before scoring and before report display.
+    Clean silent-edit rows without collapsing repeated edits.
 
-    The diff pipeline combines paragraph-level and full-document token-level
-    comparisons. That is useful for catching small Arabic edits, but it can
-    produce the same edit more than once. This function keeps one clean row for
-    each actual edit so the score, issue count and displayed rows match.
-    
-    Important: formatting-only rows keep 0 deduction, and low-impact rows may
-    still be capped later by capped_low_impact_deduction().
+    The score must be simple and auditable:
+    final score = 100 − sum(points for the rows shown in the report).
+
+    So this function no longer removes similar rows. It only removes empty rows,
+    revision-visibility events and obvious exported comment artifacts. If the
+    same correction appears twice in the article, it remains two scored rows.
     """
     cleaned = []
-    seen = set()
     for d in diff_classified or []:
         if d.get("type") in EVENT_ONLY_EDIT_TYPES:
-            cleaned.append(d)
+            # Event-only rows are useful for revision visibility but are not text
+            # edits and should not be scored or displayed as edit deductions.
             continue
 
         original = sanitize_diff_side(d.get("original", ""))
@@ -1959,27 +1953,6 @@ def _dedupe_classified_diff_edits(diff_classified):
         if _looks_like_comment_artifact(original, revised):
             continue
 
-        original_norm = normalize_for_compare(original)
-        revised_norm = normalize_for_compare(revised)
-        old_ctx = normalize_for_compare(d.get("original_context", ""))
-        new_ctx = normalize_for_compare(d.get("revised_context", ""))
-
-        # Broad key: if the exact same correction appears from both paragraph and
-        # token diff, or from repeated Google autosave snapshots, count it once.
-        # This makes the displayed edit count match the actual score.
-        key = (
-            d.get("type", "grammar"),
-            d.get("tag", ""),
-            original_norm[:300],
-            revised_norm[:300],
-        )
-
-        # Use a broad key so score count and displayed report count stay aligned.
-        # Google Docs exports can return the same edit with slightly different
-        # context windows, especially for Arabic text and autosave revisions.
-        if key in seen:
-            continue
-        seen.add(key)
         nd = dict(d)
         nd["original"] = original
         nd["revised"] = revised
@@ -2911,13 +2884,13 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
     """
     Score = 100 − comment deductions − silent-edit deductions − rounds penalty.
     Formatting-only edits are 0 points. All other silent edits count exactly as shown.
-    The same silent edit is deduped before scoring, so the report count and the
+    Every cleaned silent-edit row is scored, so the report count and the
     score calculation stay aligned.
     """
     diff_classified = _dedupe_classified_diff_edits(diff_classified)
     comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
 
-    # Diff deductions: factual/source changes count normally; low-impact cleanup may be capped.
+    # Diff deductions: every displayed silent-edit row counts exactly as shown.
     diff_deduction, diff_summary = capped_low_impact_deduction(diff_classified)
 
     # Rounds penalty
@@ -3547,22 +3520,15 @@ def _edit_report_title(d, idx):
 
 
 def _filter_real_text_edits_for_report(diff_classified):
-    """Remove revision events, leaked comment artifacts and duplicate diff rows."""
+    """Return exactly the same text-edit rows that are used for scoring."""
     rows = []
-    seen = set()
     for d in _dedupe_classified_diff_edits(diff_classified):
-        if d.get("type") == "revision_event":
-            continue
         original = _short_clean_for_edit_report(d.get("original", ""))
         revised = _short_clean_for_edit_report(d.get("revised", ""))
         if not original and not revised:
             continue
         if _looks_like_comment_artifact(original, revised):
             continue
-        key = (d.get("type", "grammar"), normalize_for_compare(original)[:250], normalize_for_compare(revised)[:250])
-        if key in seen:
-            continue
-        seen.add(key)
         nd = dict(d)
         nd["original"] = original
         nd["revised"] = revised
@@ -3647,7 +3613,7 @@ def render_gdoc_report(sub):
         st.divider()
         diff_summary = ded.get("diff_summary", {})
         event_count = diff_summary.get("event_count", 0)
-        text_change_count = len([d for d in diff_classified if d.get("type") != "revision_event"])
+        text_change_count = len(_filter_real_text_edits_for_report(diff_classified))
         activity_count = sub.get("revision_activity_count", 0)
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
@@ -3666,7 +3632,7 @@ def render_gdoc_report(sub):
             st.info(
                 f"Score uses the same silent-edit deductions shown in the breakdown: "
                 f"{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts "
-                f"for {diff_summary.get('low_count')} grammar/rephrase/formatting edits. "
+                f"for {diff_summary.get('low_count')} displayed silent edits. "
                 "Formatting-only edits count as 0 pts."
             )
 
