@@ -2670,11 +2670,13 @@ def fetch_google_doc(url):
             author = c.get("author", {}).get("displayName", "Editor")
             email  = c.get("author", {}).get("emailAddress", "")
             resolved = c.get("resolved", False)
+            quoted = ((c.get("quotedFileContent") or {}).get("value") or "").strip()
             if body:
                 comments.append({
                     "author":   author,
                     "email":    email,
                     "text":     body,
+                    "quoted":   quoted,
                     "resolved": resolved,
                 })
             # Also collect replies (editor follow-up comments)
@@ -2686,6 +2688,7 @@ def fetch_google_doc(url):
                         "author":   rauth,
                         "email":    r.get("author", {}).get("emailAddress", ""),
                         "text":     rbody,
+                        "quoted":   quoted,
                         "resolved": resolved,
                         "is_reply": True,
                     })
@@ -2758,9 +2761,18 @@ def count_revision_rounds(revisions, editor_name):
 
     return rounds, len(revisions), annotated
 
+
+def _plain_comment_text(value):
+    """Normalize Google Drive comment HTML/plain text for classification."""
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 def _is_url_only_comment(text):
     """Return True when the comment is only a URL/source reference with no instruction."""
-    value = str(text or "").strip()
+    value = _plain_comment_text(text)
     if not value:
         return True
     urls = re.findall(r"https?://\S+", value)
@@ -2773,94 +2785,134 @@ def _is_url_only_comment(text):
     return remainder == ""
 
 
-def _comment_rule_based_type(text, lang=""):
+def _comment_signal_features(comment, lang=""):
     """
-    Deterministic comment classification.
+    Classify comments from intent and objects, not only fixed phrases.
 
-    This fixes the common bug where source/data comments were marked as grammar
-    because the AI fallback defaulted to grammar. The rules are intentionally
-    strict: comments that mention listings, wrong data, missing prices, or source
-    links are never treated as simple grammar unless they are only a bare URL.
+    The model used to default Arabic/source comments to grammar. This signal
+    layer reads the comment like an editor would: What action is requested?
+    What object is affected? Is it source/data, missing info, removal, structure,
+    or language only?
     """
-    raw = str(text or "").strip()
-    low = raw.lower()
-    compact = re.sub(r"\s+", " ", low)
+    text = _plain_comment_text(comment.get("text", "") if isinstance(comment, dict) else comment)
+    quoted = _plain_comment_text(comment.get("quoted", "") if isinstance(comment, dict) else "")
+    combined = f"{text} {quoted}".strip()
+    low = combined.lower()
 
-    if _is_url_only_comment(raw):
-        return "formatting"
+    # URLs / source evidence
+    urls = re.findall(r"https?://\S+", text)
+    url_only = _is_url_only_comment(text)
 
-    # Arabic source / factual correction patterns.
-    factual_ar = [
-        "الاسم الصحيح", "الاسم الصح", "الصح حسب", "الصحيح حسب", "حسب اللستنج", "حسب الليستنج",
-        "اللستنج", "الليستنج", "بدل الاسم", "بدل", "السبب غلط", "غلط", "خطأ", "خطا",
-        "غير صحيح", "مش صحيح", "ليس صحيح", "غير دقيق", "مش دقيق", "الداتا", "البيانات",
-        "المصدر", "حسب المصدر", "حسب الشيت", "حسب الجدول", "من الشيت", "من الجدول",
-        "رقم غلط", "السعر غلط", "السعر غير صحيح", "العنوان غلط", "الاسم غلط", "المعلومة غلط",
-        "الرابط غلط", "اللينك غلط", "الرابط لا يعمل", "اللينك لا يعمل",
-    ]
-    if any(k in compact for k in factual_ar):
-        return "factual"
+    # Object classes: what kind of thing is the editor talking about?
+    has_money_or_number = bool(re.search(r"\b(?:aed|درهم)\b|\d", low))
+    source_object = bool(re.search(
+        r"\b(source|listing|brochure|sheet|spreadsheet|data|dataset|official|url|link|lpv|crm|bayut|dubizzle)\b|"
+        r"المصدر|مصدر|اللستنج|الليستنج|الشيت|الجدول|الداتا|البيانات|الرابط|اللينك|الرابط|رابط|رسمي|حسب",
+        low
+    ))
+    factual_object = bool(re.search(
+        r"\b(price|prices|aed|age|ticket|tickets|date|handover|location|area|name|title|reason|bedroom|bedrooms|studio|floor|sqft|payment|permit|number|unit|units|developer|project)\b|"
+        r"السعر|الأسعار|اسعار|الاسعار|رسوم|التكلفة|تذكرة|تذاكر|العمر|السن|التاريخ|التسليم|الموقع|المنطقة|الاسم|العنوان|السبب|غرف|غرفة|طابق|قدم|خطة|الدفع|رقم|وحدة|وحدات|المطور|المشروع|نوع|تصريح",
+        low
+    )) or has_money_or_number
 
-    # Unsupported/wrong info removal, especially prices or claims not present in source.
-    wrong_removed_ar = [
-        "غير موجودة", "غير موجود", "مش موجودة", "مش موجود", "ما في", "لا يوجد",
-        "اسعار غير", "أسعار غير", "سعر غير", "غير مذكورة", "غير مذكور", "احذف", "احذفي",
-        "شيل", "شيلي", "نشيل", "remove", "wrong info", "unsupported",
-    ]
-    if any(k in compact for k in wrong_removed_ar) and any(k in compact for k in ["سعر", "أسعار", "اسعار", "معلومة", "معلومات", "المصدر", "اللستنج", "الليستنج", "source", "price"]):
-        return "wrong_info_removed"
+    # Intent classes: what action is being requested?
+    wrong_signal = bool(re.search(
+        r"\b(wrong|incorrect|inaccurate|not correct|false|mismatch|doesn'?t match|should be|must be|correct)\b|"
+        r"غلط|خطأ|خطا|غير صحيح|مش صحيح|ليس صحيح|غير دقيق|مش دقيق|الصحيح|الصح|الأدق|ادق|بدل",
+        low
+    ))
+    missing_signal = bool(re.search(
+        r"\b(missing|where is|where are|add|include|mention|not mentioned|required|needs|need to add|please add|lacks)\b|"
+        r"وين|أين|فين|ناقص|ناقصة|مفقود|مفقودة|أضف|اضف|ضيف|ضف|نضيف|لازم نضيف|يجب إضافة|اذكر|أذكر|نذكر|اكتب|أكتب|مطلوب|مطلوبة",
+        low
+    ))
+    removal_signal = bool(re.search(
+        r"\b(remove|delete|cut|unsupported|not in source|not available|not found|no source|not listed|not on listing)\b|"
+        r"غير موجود|غير موجودة|مش موجود|مش موجودة|غير مذكور|غير مذكورة|احذف|احذفي|شيل|شيلي|نشيل|بدون مصدر|ليس في المصدر|مش في المصدر",
+        low
+    ))
+    structural_signal = bool(re.search(
+        r"\b(rewrite|restructure|structure|paragraph|section|heading|header|table|bullet|list|move|arrange|reorder|format as paragraph)\b|"
+        r"بارجراف|فقرة|فقره|هيكلة|ترتيب|رتب|نقسم|قسم|عنوان|هيدر|جدول|نقل|انقل|مكانه|صياغة القسم",
+        low
+    ))
+    language_signal = bool(re.search(
+        r"\b(grammar|spelling|typo|punctuation|wording|language|capitalize|capitalise)\b|"
+        r"إملاء|املاء|نحو|لغوي|لغوية|لغة|تشكيل|همزة|ترقيم|الفاصلة|النقطة|صياغة لغوية",
+        low
+    ))
+    style_signal = bool(re.search(
+        r"\b(rephrase|tone|style|voice|brand|too generic|generic|sounds|flow|readability)\b|"
+        r"أسلوب|ستايل|نبرة|عام|عامة|صياغة|ركيك|أجمل|أفضل صياغة",
+        low
+    ))
 
-    # Missing info questions/requests.
-    missing_ar = [
-        "وين", "أين", "فين", "ناقص", "ناقصة", "مفقود", "مفقودة", "اضف", "أضف", "ضيف", "ضف",
-        "نضيف", "لازم نضيف", "يجب إضافة", "اذكر", "أذكر", "نذكر", "اكتب", "أكتب",
-        "الأوراق المطلوبة", "الرسوم", "الأسعار", "اسعار", "الاسعار", "السعر", "التفاصيل",
-    ]
-    if ("وين" in compact or "أين" in compact or "فين" in compact) and any(k in compact for k in ["السعر", "الأسعار", "اسعار", "الاسعار", "رسوم", "التفاصيل"]):
-        return "missing"
-    if any(k in compact for k in ["ناقص", "ناقصة", "مفقود", "مفقودة", "not mentioned", "missing", "please add", "add ", "include"]):
-        return "missing"
+    question_signal = "?" in text or "؟" in text
 
-    # Structure-only instructions.
-    structural_ar = [
-        "بارجراف", "فقرة", "نقسم", "قسم", "ترتيب", "الترتيب", "هيكلة", "مكانه غلط",
-        "انقل", "نقل", "عنوان", "هيدر", "section", "paragraph", "rewrite", "restructure", "move this",
-    ]
-    if any(k in compact for k in structural_ar):
-        return "structural"
+    return {
+        "text": text,
+        "quoted": quoted,
+        "combined": combined,
+        "url_only": url_only,
+        "has_url": bool(urls),
+        "source_object": source_object,
+        "factual_object": factual_object,
+        "wrong_signal": wrong_signal,
+        "missing_signal": missing_signal,
+        "removal_signal": removal_signal,
+        "structural_signal": structural_signal,
+        "language_signal": language_signal,
+        "style_signal": style_signal,
+        "question_signal": question_signal,
+    }
 
-    # English source / factual correction patterns.
-    factual_en = [
-        "wrong", "incorrect", "not correct", "inaccurate", "source", "listing", "according to listing",
-        "correct name", "correct title", "should be", "must be", "price is", "age is", "data", "fact",
-        "spreadsheet", "sheet", "from the sheet", "from source", "from the source", "url goes", "link goes",
-        "not available in source", "not in source", "not on source", "not in listing", "listing says",
-    ]
-    if any(k in compact for k in factual_en):
-        # Bare links were already caught as formatting. A source instruction is factual/source related.
-        return "factual"
 
-    missing_en = [
-        "missing", "please add", "add ", "include", "mention", "not mentioned", "where is", "where are",
-        "we need", "needs", "required", "lacks",
-    ]
-    if any(k in compact for k in missing_en):
-        return "missing"
+def _logic_comment_type(comment, lang=""):
+    """
+    Decide comment type by priority logic.
 
-    structural_en = ["rewrite", "restructure", "paragraph", "section", "header", "move", "wrong place", "format as paragraph"]
-    if any(k in compact for k in structural_en):
-        return "structural"
+    Priority is important:
+    - missing source/data beats grammar
+    - wrong source/data beats structure
+    - unsupported information removal beats paragraph formatting
+    - bare source link is only formatting
+    """
+    f = _comment_signal_features(comment, lang)
 
-    rephrase_en = ["tone", "style", "brand", "too generic", "generic", "sounds", "rephrase"]
-    if any(k in compact for k in rephrase_en):
-        return "rephrase"
+    if not f["text"] or f["url_only"]:
+        return "formatting", "Bare URL/source reference only."
 
-    # Arabic language-only cues.
-    arabic_language_ar = ["إملاء", "املاء", "نحو", "صياغة", "لغة", "لغوي", "لغوية", "تشكيل", "همزة"]
-    if any(k in compact for k in arabic_language_ar):
-        return "arabic_language"
+    # Missing required info: questions like "وين الأسعار؟" should never be grammar.
+    if f["missing_signal"] and (f["factual_object"] or f["source_object"] or f["question_signal"]):
+        return "missing", "Comment asks for required source/data/details that are missing."
 
-    return "grammar"
+    # Unsupported data or wrong info to remove. If it also asks for paragraph format,
+    # keep the reason as wrong info removed because the data is the real issue.
+    if f["removal_signal"] and (f["source_object"] or f["factual_object"]):
+        return "wrong_info_removed", "Comment says source/data/prices/claims are not available or should be removed."
+
+    # Wrong/corrected facts or source-aligned factual corrections.
+    if f["wrong_signal"] and (f["source_object"] or f["factual_object"]):
+        return "factual", "Comment corrects a source/data/name/price/reason/location detail."
+
+    # Source/listing/sheet comments with an instruction are source-related even if
+    # the exact phrase is new. A bare link has already been excluded above.
+    if f["source_object"] and (f["wrong_signal"] or f["factual_object"]):
+        return "factual", "Comment refers to a source/listing/sheet for a factual correction."
+
+    # Structure only, with no source/data/wrong-info signal.
+    if f["structural_signal"] and not (f["source_object"] or f["wrong_signal"] or f["removal_signal"] or f["missing_signal"]):
+        return "structural", "Comment asks for structural/paragraph/section change."
+
+    # Language only.
+    if f["language_signal"] and not (f["source_object"] or f["factual_object"] or f["wrong_signal"] or f["missing_signal"] or f["removal_signal"]):
+        return "arabic_language" if lang == "Arabic" or re.search(r"[\u0600-\u06FF]", f["combined"]) else "grammar", "Language, spelling, grammar, or punctuation only."
+
+    if f["style_signal"] and not (f["source_object"] or f["factual_object"] or f["wrong_signal"] or f["missing_signal"] or f["removal_signal"]):
+        return "rephrase", "Style, tone, or wording improvement only."
+
+    return "", "No strong rule-based decision."
 
 
 def _normalise_comment_type(ctype):
@@ -2871,6 +2923,8 @@ def _normalise_comment_type(ctype):
         "source_related": "factual",
         "source-related": "factual",
         "fact": "factual",
+        "incorrect": "factual",
+        "wrong": "factual",
         "missing_info": "missing",
         "missing info": "missing",
         "language": "grammar",
@@ -2884,35 +2938,31 @@ def _normalise_comment_type(ctype):
 
 
 def classify_comments_ai(comments, platform, lang):
-    """Classify each Google Doc comment with reliable source/factual guardrails."""
+    """Classify each Google Doc comment with intent-based source/factual logic."""
     if not comments:
         return []
 
-    c_txt = "\n".join(f"  [{i+1}] {c['text']}" for i, c in enumerate(comments))
+    c_txt = "\n".join(
+        f"  [{i+1}] COMMENT: {_plain_comment_text(c.get('text',''))}\n      QUOTED TEXT: {_plain_comment_text(c.get('quoted',''))[:300]}"
+        for i, c in enumerate(comments)
+    )
     prompt = f"""You are a strict editorial QA classifier for {platform}. Content language: {lang}.
 
-Classify each editor comment into exactly one type:
-- "factual" → wrong source/data, wrong name, wrong reason, wrong price/date/location, or correction based on listing/source/sheet.
-- "wrong_info_removed" → comment says information/prices/claims are not in the source and should be removed.
-- "missing" → required information is missing or the editor asks where a required item is.
-- "structural" → paragraph/section/header/structure needs changing, without a clear wrong fact.
-- "arabic_language" → Arabic grammar/spelling/word agreement only, no factual/source issue.
-- "grammar" → English grammar/punctuation/minor phrasing only, no factual/source issue.
-- "rephrase" → style/tone/brand voice rewrite only.
-- "formatting" → only a bare source link or formatting note with no correction.
+Classify the editorial INTENT of each Google Doc comment. Use exactly one type:
+- "factual" when the comment corrects wrong source/data, wrong name, wrong reason, wrong price/date/location, or asks to align with a listing/source/sheet.
+- "wrong_info_removed" when the comment says claims/prices/details are not in the source or should be removed.
+- "missing" when required information is missing or the editor asks where it is.
+- "structural" when the section/paragraph/header/table structure must change, without a wrong fact.
+- "arabic_language" for Arabic grammar/spelling/agreement/punctuation only, no source/data issue.
+- "grammar" for English grammar/punctuation/minor phrasing only, no source/data issue.
+- "rephrase" for style/tone/brand voice rewrite only.
+- "formatting" for a bare source link or formatting note with no correction.
 
-Arabic examples:
-- "الاسم الصحيح حسب اللستنج: فلل سيدرا 1 بدل الاسم" = factual
-- "السبب غلط" = factual
-- "مشان في كثير أسعار غير موجودة، الأفضل نعمله بارجراف" = wrong_info_removed
-- "وين الأسعار؟" = missing
-- A bare Google Sheets/Docs link only = formatting
-
-Important:
-- Do NOT classify listing/source/sheet/data/price comments as grammar.
-- If a comment says something is wrong, use factual unless it is only grammar.
-- If a comment asks for missing prices/details, use missing.
-- Every comment must be classified.
+Important logic:
+- Do not use grammar just because the comment is short.
+- A comment about source, listing, sheet, data, prices, names, reasons, or missing required details is not grammar.
+- If both structure and wrong/missing data appear, classify by the data problem first.
+- Bare links alone are formatting.
 
 Comments:
 {c_txt}
@@ -2936,31 +2986,31 @@ Return ONLY raw JSON, no markdown:
 
     classified = []
     for i, c in enumerate(comments, 1):
-        text = c.get("text", "")
-        rule_type = _comment_rule_based_type(text, lang)
+        logic_type, reason = _logic_comment_type(c, lang)
         ai_type = ai_map.get(i, "")
 
-        # Deterministic source/data rules override AI grammar/rephrase mistakes.
-        # This is the key fix for Arabic comments such as "الاسم الصحيح حسب اللستنج".
-        if rule_type in {"factual", "wrong_info_removed", "missing", "structural", "formatting", "arabic_language"}:
-            ctype = rule_type
+        # Logic overrides AI only when it has a strong reason. This is not phrase-only;
+        # it uses intent + object signals from the comment and quoted text.
+        if logic_type:
+            ctype = logic_type
         else:
-            ctype = ai_type or rule_type
+            ctype = ai_type or ("arabic_language" if lang == "Arabic" else "grammar")
 
         ctype = _normalise_comment_type(ctype)
         w = COMMENT_WEIGHTS[ctype]
         classified.append({
             "author":    c.get("author", ""),
             "email":     c.get("email", ""),
-            "text":      text,
+            "text":      _plain_comment_text(c.get("text", "")),
+            "quoted":    _plain_comment_text(c.get("quoted", "")),
             "type":      ctype,
             "label":     w["label"],
             "deduction": w["deduction"],
             "color":     w["color"],
             "tc":        w["tc"],
+            "reason":    reason or "AI classification after intent check.",
         })
     return classified
-
 
 def apply_gdoc_deductions(classified_comments, editor_rounds):
     """Legacy — kept for backward compat."""
