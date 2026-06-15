@@ -1177,17 +1177,47 @@ def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
 
 def merge_diff_changes(*change_groups):
     """
-    Merge diff outputs without hiding detected edits.
+    Merge diff outputs and score each real edit once.
 
-    Paragraph diff and token diff both provide useful evidence. To make the QA
-    math transparent, we keep the detected rows and let the final report score
-    exactly those rows. Empty/artifact rows are filtered later.
+    Earlier builds appended paragraph diff, token diff, session diff and endpoint
+    diff together. That made the same edit block appear two or three times in
+    the report and inflated the score deduction. This helper now removes duplicate
+    rows across diff sources while keeping repeated edits that happen in different
+    nearby contexts.
     """
     merged = []
+    seen = set()
+
     for group in change_groups:
         for ch in group or []:
-            if ch:
-                merged.append(ch)
+            if not ch:
+                continue
+            original = sanitize_diff_side(ch.get("original", ""))
+            revised = sanitize_diff_side(ch.get("revised", ""))
+            if not original and not revised:
+                continue
+            if _looks_like_comment_artifact(original, revised):
+                continue
+
+            old_norm = normalize_for_compare(original)
+            new_norm = normalize_for_compare(revised)
+            if old_norm == new_norm:
+                continue
+
+            old_ctx = normalize_for_compare(ch.get("original_context", original))
+            new_ctx = normalize_for_compare(ch.get("revised_context", revised))
+
+            # Keep repeated corrections only when the surrounding text is different.
+            key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260])
+            if key in seen:
+                continue
+            seen.add(key)
+
+            nd = dict(ch)
+            nd["original"] = original
+            nd["revised"] = revised
+            merged.append(nd)
+
     return merged
 
 
@@ -1902,18 +1932,14 @@ def _revision_user_matches_editor(revision, editor_name):
 
 def _dedupe_diff_changes(changes):
     """
-    Keep every detected edit event.
+    Remove duplicate raw silent-edit rows before AI classification.
 
-    Earlier builds removed rows that looked similar, which made the score and
-    report feel inconsistent because the dashboard could say fewer edits than
-    Google Docs visibly changed. For QA scoring we should count what the diff
-    pipeline detected, then make the score equal to the displayed deductions.
-
-    We only drop fully empty rows or obvious Google Docs comment artifacts.
-    The same wording change may appear more than once in an article and must be
-    counted more than once.
+    Same original/revised/context from multiple diff passes must be scored once.
+    The same correction can still be counted more than once when it appears in
+    different surrounding context.
     """
     cleaned = []
+    seen = set()
     for ch in changes or []:
         original = sanitize_diff_side(ch.get("original", ""))
         revised = sanitize_diff_side(ch.get("revised", ""))
@@ -1921,6 +1947,19 @@ def _dedupe_diff_changes(changes):
             continue
         if _looks_like_comment_artifact(original, revised):
             continue
+
+        old_norm = normalize_for_compare(original)
+        new_norm = normalize_for_compare(revised)
+        if old_norm == new_norm:
+            continue
+
+        old_ctx = normalize_for_compare(ch.get("original_context", original))
+        new_ctx = normalize_for_compare(ch.get("revised_context", revised))
+        key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260])
+        if key in seen:
+            continue
+        seen.add(key)
+
         nd = dict(ch)
         nd["original"] = original
         nd["revised"] = revised
@@ -1930,20 +1969,16 @@ def _dedupe_diff_changes(changes):
 
 def _dedupe_classified_diff_edits(diff_classified):
     """
-    Clean silent-edit rows without collapsing repeated edits.
+    Remove duplicate classified silent edits and make scoring auditable.
 
-    The score must be simple and auditable:
-    final score = 100 − sum(points for the rows shown in the report).
-
-    So this function no longer removes similar rows. It only removes empty rows,
-    revision-visibility events and obvious exported comment artifacts. If the
-    same correction appears twice in the article, it remains two scored rows.
+    Final score must equal 100 minus the sum of deductions for the rows shown in
+    the report. Therefore every displayed row is scored once, and duplicated rows
+    created by multiple diff passes are removed before scoring.
     """
     cleaned = []
+    seen = set()
     for d in diff_classified or []:
         if d.get("type") in EVENT_ONLY_EDIT_TYPES:
-            # Event-only rows are useful for revision visibility but are not text
-            # edits and should not be scored or displayed as edit deductions.
             continue
 
         original = sanitize_diff_side(d.get("original", ""))
@@ -1952,6 +1987,18 @@ def _dedupe_classified_diff_edits(diff_classified):
             continue
         if _looks_like_comment_artifact(original, revised):
             continue
+
+        old_norm = normalize_for_compare(original)
+        new_norm = normalize_for_compare(revised)
+        if old_norm == new_norm:
+            continue
+
+        old_ctx = normalize_for_compare(d.get("original_context", original))
+        new_ctx = normalize_for_compare(d.get("revised_context", revised))
+        key = (old_norm[:220], new_norm[:220], old_ctx[:260], new_ctx[:260], d.get("type", ""))
+        if key in seen:
+            continue
+        seen.add(key)
 
         nd = dict(d)
         nd["original"] = original
@@ -2438,19 +2485,34 @@ def _select_writer_handoff_index_for_current_doc(ordered, writer_matches, curren
 
 
 def _prepare_arabic_or_normal_changes(writer_text, editor_text, lang):
-    """Run the same paragraph + Arabic token-level diff pipeline in one place."""
-    changes = compute_diff(writer_text, editor_text)
-    if lang == "Arabic" or changes_contain_arabic(changes):
-        paragraph_micro_changes = _split_arabic_large_changes(changes)
+    """
+    Build ONE scored silent-edit list for a writer/editor comparison.
+
+    Arabic articles need word-level detection, but the token diff must not be
+    added on top of the paragraph diff as a second scored pass. For Arabic we
+    use the full-document token diff as the primary list because it catches small
+    language edits and gives one row per actual text replacement. For English we
+    use the paragraph/sentence diff.
+    """
+    paragraph_changes = compute_diff(writer_text, editor_text)
+
+    if lang == "Arabic" or changes_contain_arabic(paragraph_changes):
+        token_changes = compute_document_level_token_edits(writer_text, editor_text, "Arabic")
+        # If token diff is available, use it as the ONLY scored Arabic diff list.
+        # Do not merge it with paragraph diff, because that double-scores edits.
+        if token_changes:
+            return _dedupe_diff_changes(token_changes)
+
+        # Fallback only when token diff cannot produce useful rows.
+        paragraph_micro_changes = _split_arabic_large_changes(paragraph_changes)
         paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
-        document_token_changes = compute_document_level_token_edits(writer_text, editor_text, "Arabic")
-        changes = merge_diff_changes(paragraph_micro_changes, document_token_changes)
-        changes = _dedupe_diff_changes(changes)
-    elif should_use_arabic_micro_edits(changes, lang):
-        changes = _split_arabic_large_changes(changes)
-        changes = explode_changes_to_micro_edits(changes, "Arabic")
-        changes = _dedupe_diff_changes(changes)
-    return changes
+        return _dedupe_diff_changes(paragraph_micro_changes)
+
+    if should_use_arabic_micro_edits(paragraph_changes, lang):
+        paragraph_changes = _split_arabic_large_changes(paragraph_changes)
+        paragraph_changes = explode_changes_to_micro_edits(paragraph_changes, "Arabic")
+
+    return _dedupe_diff_changes(paragraph_changes)
 
 
 def compute_editor_session_revision_diffs(drive_svc, creds, doc_id, revisions, writer_rev, editor_rev, editor_final_text, lang):
@@ -3514,24 +3576,14 @@ def page_gdoc_submit():
         writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
 
         if handoff_writer_text and handoff_editor_text:
-            # Compare in two ways and merge the results:
-            # 1) every exportable snapshot inside the selected writer→editor session
-            # 2) the final endpoint diff: writer handoff → editor final
-            #
-            # Google Docs sometimes groups many visible edits under one current
-            # version. Consecutive snapshots catch step-by-step saves when the API
-            # exposes them; endpoint diff catches net edits when Google collapses
-            # the internal rows. Using both prevents false 100/100 results and
-            # avoids reports that show only one or two edits when more text changed.
-            session_changes = compute_editor_session_revision_diffs(
-                parsed["drive_svc"], parsed["svc_creds"], extract_doc_id(doc_url),
-                parsed["revisions"], handoff_writer_rev, handoff_editor_rev,
-                handoff_editor_text, lang,
-            )
+            # Score ONE comparison only: writer handoff text vs editor final text.
+            # Do not append session-level revision diffs to endpoint diffs, because
+            # that double/triple counts the same edit when Google exports several
+            # snapshots for the same visible editing session.
             endpoint_changes = _prepare_arabic_or_normal_changes(
                 handoff_writer_text, handoff_editor_text, lang
             )
-            diff_changes = merge_diff_changes(session_changes, endpoint_changes)
+            diff_changes = _dedupe_diff_changes(endpoint_changes)
 
             # Safety net for Google Docs/Drive mismatch:
             # The Google Docs UI may show the editor's saves, while Drive revision
@@ -3786,7 +3838,7 @@ def render_gdoc_report(sub):
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
         is_handoff = sub.get("diff_source") in {"editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor"}
-        mode_label = "Editor edits to writer handoff version" if is_handoff else "Silent editor activity"
+        mode_label = "Editor edits scored once from writer handoff version" if is_handoff else "Silent editor activity"
         if is_handoff:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
@@ -3797,7 +3849,7 @@ def render_gdoc_report(sub):
         # Internal API/revision details are intentionally hidden from the report UI.
         if diff_summary.get("low_count", 0):
             st.info(
-                f"Score uses the same silent-edit deductions shown in the breakdown: "
+                f"Score uses each displayed silent edit once: "
                 f"{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts "
                 f"for {diff_summary.get('low_count')} displayed silent edits. "
                 "Formatting-only edits count as 0 pts."
@@ -3811,7 +3863,7 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer handoff version and the editor final version. The score uses the same counted edits shown here.")
+            st.caption("These are the actual text differences between the writer handoff version and the editor final version. Each edit is shown and scored once.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
