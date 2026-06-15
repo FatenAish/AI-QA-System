@@ -1977,7 +1977,9 @@ def _dedupe_classified_diff_edits(diff_classified):
     different places in the article.
     """
     cleaned = []
-    seen = set()
+    # Dict, not set: we store the index of the first kept row so repeated
+    # original-to-revised edits are scored once and the strongest classification wins.
+    seen = {}
     for d in diff_classified or []:
         if d.get("type") in EVENT_ONLY_EDIT_TYPES:
             continue
