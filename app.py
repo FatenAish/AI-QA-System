@@ -118,9 +118,128 @@ EVENT_ONLY_EDIT_TYPES = {"revision_event"}
 REVISION_ROUND_PENALTY = 0.7  # per extra round
 
 RECORDS_FILE = "qa_records.json"
+RECORDS_SHEET_TAB = "qa_records"
+RECORDS_SHEET_CHUNK_SIZE = 45000
 
-# ── Local persistence ──────────────────────────────────────────────────────
-def load_records():
+# ── Shared persistence ─────────────────────────────────────────────────────
+def _records_sheet_id():
+    """Optional shared Google Sheet ID for dashboard records across all users."""
+    try:
+        return (st.secrets.get("QA_RECORDS_SHEET_ID", "") or os.environ.get("QA_RECORDS_SHEET_ID", "")).strip()
+    except Exception:
+        return os.environ.get("QA_RECORDS_SHEET_ID", "").strip()
+
+def _records_sheet_tab():
+    try:
+        return (st.secrets.get("QA_RECORDS_SHEET_TAB", "") or RECORDS_SHEET_TAB).strip() or RECORDS_SHEET_TAB
+    except Exception:
+        return RECORDS_SHEET_TAB
+
+
+
+def is_shared_dashboard_connected():
+    """True when the dashboard is configured to use the shared Google Sheet backend."""
+    return bool(_records_sheet_id())
+
+def shared_dashboard_help_text():
+    return (
+        "Shared dashboard is not connected. Add QA_RECORDS_SHEET_ID to Streamlit secrets "
+        "and share that Google Sheet with the service account as Editor. Until then, records "
+        "are only saved inside this app instance and will not be shared reliably across laptops."
+    )
+
+def _get_sheets_service():
+    if not GOOGLE_OK:
+        raise Exception("google-api-python-client not installed")
+    info = dict(st.secrets["gcp_service_account"])
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+    )
+    return build("sheets", "v4", credentials=creds)
+
+def _ensure_records_sheet(sheets_svc, sheet_id):
+    """Create the records tab/header if needed."""
+    tab = _records_sheet_tab()
+    meta = sheets_svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    titles = [s.get("properties", {}).get("title") for s in meta.get("sheets", [])]
+    if tab not in titles:
+        sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
+        ).execute()
+    values = sheets_svc.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=f"{tab}!A1:Z1"
+    ).execute().get("values", [])
+    if not values:
+        header = ["record_key", "updated_at", "payload_1"]
+        sheets_svc.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"{tab}!A1:C1",
+            valueInputOption="RAW",
+            body={"values": [header]},
+        ).execute()
+
+def _split_payload(payload):
+    return [payload[i:i + RECORDS_SHEET_CHUNK_SIZE] for i in range(0, len(payload), RECORDS_SHEET_CHUNK_SIZE)] or [""]
+
+def _load_records_from_sheet():
+    sheet_id = _records_sheet_id()
+    if not sheet_id:
+        return None
+    sheets = _get_sheets_service()
+    _ensure_records_sheet(sheets, sheet_id)
+    tab = _records_sheet_tab()
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=f"{tab}!A2:ZZ"
+    ).execute().get("values", [])
+    records = []
+    for row in rows:
+        if len(row) < 3:
+            continue
+        payload = "".join(row[2:]).strip()
+        if not payload:
+            continue
+        try:
+            rec = json.loads(payload)
+            if isinstance(rec, dict):
+                records.append(rec)
+        except Exception:
+            continue
+    return records
+
+def _save_records_to_sheet(records):
+    sheet_id = _records_sheet_id()
+    if not sheet_id:
+        return False
+    sheets = _get_sheets_service()
+    _ensure_records_sheet(sheets, sheet_id)
+    tab = _records_sheet_tab()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    max_chunks = 1
+    for rec in records:
+        clean = _serialisable(rec)
+        payload = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+        chunks = _split_payload(payload)
+        max_chunks = max(max_chunks, len(chunks))
+        rows.append([json.dumps(_record_storage_key(clean), ensure_ascii=False), now] + chunks)
+    header = ["record_key", "updated_at"] + [f"payload_{i}" for i in range(1, max_chunks + 1)]
+    sheets.spreadsheets().values().clear(
+        spreadsheetId=sheet_id, range=f"{tab}!A:ZZ"
+    ).execute()
+    sheets.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{tab}!A1",
+        valueInputOption="RAW",
+        body={"values": [header] + rows},
+    ).execute()
+    return True
+
+def _load_records_local():
     if not os.path.exists(RECORDS_FILE):
         return []
     try:
@@ -129,6 +248,42 @@ def load_records():
     except Exception:
         return []
 
+def _save_records_local(records):
+    with open(RECORDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(_serialisable(records), f, ensure_ascii=False, indent=2)
+
+def load_records():
+    """Load dashboard records. Uses a shared Google Sheet when configured, otherwise local JSON."""
+    try:
+        shared = _load_records_from_sheet()
+        if shared is not None:
+            return shared
+    except Exception as e:
+        try:
+            st.warning(f"Could not load shared dashboard records, using local cache only. Details: {e}")
+        except Exception:
+            pass
+    return _load_records_local()
+
+def save_records(records):
+    """Save all dashboard records to the shared backend or local fallback."""
+    if not _records_sheet_id():
+        try:
+            st.warning(shared_dashboard_help_text())
+        except Exception:
+            pass
+        _save_records_local(records)
+        return
+    try:
+        if _save_records_to_sheet(_serialisable(records)):
+            return
+    except Exception as e:
+        try:
+            st.warning(f"Could not save to the shared dashboard, saving locally only. Details: {e}")
+        except Exception:
+            pass
+    _save_records_local(records)
+
 def save_record(sub):
     records = load_records()
     key = _record_storage_key(sub)
@@ -136,8 +291,7 @@ def save_record(sub):
         if _record_storage_key(r) == key:
             return
     records.append(_serialisable(sub))
-    with open(RECORDS_FILE, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    save_records(records)
 
 def update_record_decision(sub):
     records = load_records()
@@ -147,8 +301,7 @@ def update_record_decision(sub):
             r["editor_decision"] = sub.get("editor_decision", "")
             r["editor_notes"]    = sub.get("editor_notes", "")
             break
-    with open(RECORDS_FILE, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    save_records(records)
 
 def _serialisable(obj):
     if isinstance(obj, dict):          return {k: _serialisable(v) for k, v in obj.items()}
@@ -191,8 +344,15 @@ def _submission_identity(sub):
 
 
 def _sub_widget_key(sub, prefix):
-    """Unique Streamlit widget key for widgets inside full reports."""
-    return f"{prefix}_{_safe_key_part(sub.get('title','Untitled'))}_{_submission_identity(sub)}"
+    """Unique Streamlit widget key for widgets inside full reports.
+
+    The same evaluation can appear more than once in the dashboard when the
+    user reruns the same Google Doc several times, or when old duplicate
+    records already exist in qa_records.json. Streamlit keys must be unique
+    per rendered widget, so dashboard rows pass an internal _render_uid.
+    """
+    render_uid = sub.get("_render_uid") or "single"
+    return f"{prefix}_{_safe_key_part(sub.get('title','Untitled'))}_{_submission_identity(sub)}_{_safe_key_part(render_uid)}"
 
 
 def _record_storage_key(sub):
@@ -396,6 +556,7 @@ def get_google_services():
             "https://www.googleapis.com/auth/documents.readonly",
             "https://www.googleapis.com/auth/drive.readonly",
             "https://www.googleapis.com/auth/drive.activity.readonly",
+            "https://www.googleapis.com/auth/spreadsheets",
         ]
     )
     docs  = build("docs",  "v1", credentials=creds)
@@ -1772,6 +1933,64 @@ def _dedupe_diff_changes(changes):
     return unique
 
 
+def _dedupe_classified_diff_edits(diff_classified):
+    """
+    Clean silent-edit rows before scoring and before report display.
+
+    The diff pipeline combines paragraph-level and full-document token-level
+    comparisons. That is useful for catching small Arabic edits, but it can
+    produce the same edit more than once. This function keeps one clean row for
+    each actual edit so the score, issue count and displayed rows match.
+    
+    Important: formatting-only rows keep 0 deduction, and low-impact rows may
+    still be capped later by capped_low_impact_deduction().
+    """
+    cleaned = []
+    seen = set()
+    for d in diff_classified or []:
+        if d.get("type") in EVENT_ONLY_EDIT_TYPES:
+            cleaned.append(d)
+            continue
+
+        original = sanitize_diff_side(d.get("original", ""))
+        revised = sanitize_diff_side(d.get("revised", ""))
+        if not original and not revised:
+            continue
+        if _looks_like_comment_artifact(original, revised):
+            continue
+
+        original_norm = normalize_for_compare(original)
+        revised_norm = normalize_for_compare(revised)
+        old_ctx = normalize_for_compare(d.get("original_context", ""))
+        new_ctx = normalize_for_compare(d.get("revised_context", ""))
+
+        # Broad key: if the exact same correction appears from both paragraph and
+        # token diff, or from repeated Google autosave snapshots, count it once.
+        # This makes the displayed edit count match the actual score.
+        key = (
+            d.get("type", "grammar"),
+            d.get("tag", ""),
+            original_norm[:300],
+            revised_norm[:300],
+        )
+
+        # For larger paragraph edits, context helps distinguish two genuinely
+        # separate changes. For tiny word-level edits, the broad key is safer
+        # because the same edit is often duplicated with slightly different
+        # context windows.
+        if len(original_norm.split()) > 4 or len(revised_norm.split()) > 4:
+            key = key + (old_ctx[:180], new_ctx[:180])
+
+        if key in seen:
+            continue
+        seen.add(key)
+        nd = dict(d)
+        nd["original"] = original
+        nd["revised"] = revised
+        cleaned.append(nd)
+    return cleaned
+
+
 def _split_arabic_large_changes(changes):
     """
     Arabic paragraphs can be returned as one large replace block.
@@ -2704,7 +2923,10 @@ def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_roun
     """
     Score = 100 − comment deductions − silent-edit deductions − rounds penalty.
     Formatting-only edits are 0 points. Low-impact wording/grammar cleanup is capped fairly.
+    The same silent edit is deduped before scoring, so the report count and the
+    score calculation stay aligned.
     """
+    diff_classified = _dedupe_classified_diff_edits(diff_classified)
     comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
 
     # Diff deductions: factual/source changes count normally; low-impact cleanup may be capped.
@@ -3039,7 +3261,7 @@ def page_submit():
 # ── Google Doc submit page ─────────────────────────────────────────────────
 def page_gdoc_submit():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review — editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Editorial QA Engine</div><h1>Content QA System</h1><p>Submit an article for automated review. Editor comments and silent edits are scored automatically.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
 
     if not GOOGLE_OK:
         st.error("Google API libraries not installed. Add `google-api-python-client` and `google-auth` to requirements.txt")
@@ -3066,7 +3288,7 @@ def page_gdoc_submit():
                 doc_url = st.text_input("Google Doc URL",
                                         placeholder="https://docs.google.com/document/d/...",
                                         label_visibility="collapsed")
-                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Keep the Google Doc restricted and share it with: <strong>{get_service_account_email()}</strong> as Editor</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ Share the file with: <strong>{get_service_account_email()}</strong></div>', unsafe_allow_html=True)
 
                 # Hidden: version-history paste/count override removed from UI.
                 # The system now focuses on the actual handoff comparison:
@@ -3091,10 +3313,10 @@ def page_gdoc_submit():
         st.markdown(f"""<div class="side-card">
   <div class="side-card-title">How scoring works</div>
   <div class="timeline-row"><div class="timeline-num">1</div><div><div class="timeline-title">Pull doc content</div><div class="timeline-sub">Text, comments and version history.</div></div></div>
-  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact/source −3 · Wrong info removed −2 · Missing −1.2/−1.5 · Rephrase −0.3</div></div></div>
+  <div class="timeline-row"><div class="timeline-num">2</div><div><div class="timeline-title">AI classifies every issue</div><div class="timeline-sub">Fact and source: 3 pts · Wrong info removed: 2 pts · Missing: 1.2 to 1.5 pts · Rephrase: 0.3 pts</div></div></div>
   <div class="timeline-row" style="margin-bottom:0"><div class="timeline-num">3</div><div><div class="timeline-title">Writer handoff vs editor final scored</div><div class="timeline-sub">Compares the writer handoff against the editor final text automatically.</div></div></div>
 </div>
-<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Use a private/restricted Google Doc. Public “Anyone with the link” docs will be rejected. Share the doc with <strong>{service_email}</strong> as Editor for revision export.</div></div>""", unsafe_allow_html=True)
+<div class="side-card"><div class="tip-box"><div class="tip-title">Before submitting</div>Share the file with:<br><strong>{service_email}</strong></div></div>""", unsafe_allow_html=True)
 
     if not go: return
     if not writer or not doc_url:
@@ -3213,6 +3435,7 @@ def page_gdoc_submit():
                     platform,
                     effective_diff_language(diff_changes, lang),
                 )
+                diff_classified = _dedupe_classified_diff_edits(diff_classified)
             else:
                 # Do not silently imply that the editor made no changes if the
                 # selected session could not produce readable text differences.
@@ -3336,9 +3559,10 @@ def _edit_report_title(d, idx):
 
 
 def _filter_real_text_edits_for_report(diff_classified):
-    """Remove revision events and leaked comment artifacts from displayed edits."""
+    """Remove revision events, leaked comment artifacts and duplicate diff rows."""
     rows = []
-    for d in diff_classified or []:
+    seen = set()
+    for d in _dedupe_classified_diff_edits(diff_classified):
         if d.get("type") == "revision_event":
             continue
         original = _short_clean_for_edit_report(d.get("original", ""))
@@ -3347,6 +3571,10 @@ def _filter_real_text_edits_for_report(diff_classified):
             continue
         if _looks_like_comment_artifact(original, revised):
             continue
+        key = (d.get("type", "grammar"), normalize_for_compare(original)[:250], normalize_for_compare(revised)[:250])
+        if key in seen:
+            continue
+        seen.add(key)
         nd = dict(d)
         nd["original"] = original
         nd["revised"] = revised
@@ -3390,15 +3618,26 @@ def render_gdoc_report(sub):
 
     diff_rows = ""
     diff_summary = ded.get("diff_summary", {})
+    high_medium_actual = 0.0
     for ctype, items in diff_by_type.items():
         w   = COMMENT_WEIGHTS.get(ctype, COMMENT_WEIGHTS["grammar"])
-        raw_tot = sum(float(i.get("deduction", 0)) for i in items)
-        row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
-        diff_rows += brow(row_cls, f'Silent edits — {w["label"]} ({len(items)} found)', f'−{round(raw_tot,1)} raw')
-    if diff_summary.get("low_count", 0) and not diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ded-row", f'Low-impact silent edits counted ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))} pts')
-    elif diff_summary.get("low_cap_applied"):
-        diff_rows += brow("ok-row", f'Low-impact silent edits capped ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)', f'counted −{diff_summary.get("low_capped_deduction",0)} pts')
+        raw_tot = round(sum(float(i.get("deduction", 0)) for i in items), 1)
+        if ctype in LOW_IMPACT_EDIT_TYPES:
+            # Low-impact rows are potential points before the fair cap. They are
+            # not the final score deduction unless no cap is applied.
+            val = "0 pts" if raw_tot == 0 else f'{raw_tot} pts before cap'
+            diff_rows += brow("base-row", f'Silent edits found · {w["label"]} ({len(items)} found)', val)
+        else:
+            high_medium_actual += raw_tot
+            row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
+            diff_rows += brow(row_cls, f'Silent edits deducted · {w["label"]} ({len(items)} found)', f'−{raw_tot} pts')
+
+    if diff_summary.get("low_count", 0):
+        actual_low = diff_summary.get("low_capped_deduction") if diff_summary.get("low_cap_applied") else diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))
+        label = f'Actual low-impact deduction ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)'
+        if diff_summary.get("low_cap_applied"):
+            label += f' capped at {diff_summary.get("low_cap", 3.0)} pts'
+        diff_rows += brow("ded-row", label, f'−{actual_low} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
 
@@ -3444,15 +3683,14 @@ def render_gdoc_report(sub):
         # Internal API/revision details are intentionally hidden from the report UI.
         if diff_summary.get("low_cap_applied"):
             st.info(
-                f"Low-impact edits were capped fairly: raw low-impact deduction was "
-                f"{diff_summary.get('raw_low_deduction')} pts, counted as "
-                f"{diff_summary.get('low_capped_deduction')} pts."
+                f"Score uses the actual counted deduction: {diff_summary.get('low_capped_deduction')} pts. "
+                f"The raw low-impact total before the fair cap was {diff_summary.get('raw_low_deduction')} pts."
             )
         elif diff_summary.get("low_count", 0):
             st.info(
-                f"Low-impact edits counted: "
-                f"{diff_summary.get('low_count')} grammar/rephrase/formatting edits counted "
-                f"for −{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts."
+                f"Score uses the actual counted deduction: "
+                f"{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts "
+                f"for {diff_summary.get('low_count')} grammar/rephrase/formatting edits."
             )
 
         # Human-readable edit report: writer version vs editor version.
@@ -3460,7 +3698,7 @@ def render_gdoc_report(sub):
         writer_label = (sub.get("writer") or "Writer").strip() or "Writer"
         editor_label = (sub.get("editor_name") or "Editor").strip() or "Editor"
 
-        with st.expander(f"View all editor edits — {len(report_edits)} detected edits", expanded=False):
+        with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
             st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
@@ -3492,7 +3730,7 @@ def render_gdoc_report(sub):
     # Classified comments
     if classified:
         st.divider()
-        with st.expander(f"View editor comments — {len(classified)} found", expanded=False):
+        with st.expander(f"View editor comments · {len(classified)} found", expanded=False):
             for idx, c in enumerate(classified, 1):
                 st.markdown(
                     f'<div class="cmt-card" style="border-left-color:{c["color"]}">'
@@ -3622,7 +3860,13 @@ def _dec_class(d):   return {"Approve":"dec-approve","Request revision":"dec-rev
 
 def page_dashboard():
     inject_css()
-    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">Overview</div><h1>Dashboard</h1><p>All evaluation records — persisted across sessions.</p></div><div class="qa-hero-icon">📊</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">Overview</div><h1>Dashboard</h1><p>All evaluation records from all users are shown here.</p></div><div class="qa-hero-icon">📊</div></div>', unsafe_allow_html=True)
+
+    if is_shared_dashboard_connected():
+        st.success("Shared dashboard connected. Results submitted from any laptop using this app will appear here.")
+    else:
+        st.error(shared_dashboard_help_text())
+
     all_subs = st.session_state.get("submissions", [])
     if not all_subs:
         st.info("No evaluations yet. Submit an article to get started."); return
@@ -3649,8 +3893,7 @@ def page_dashboard():
                 seen.add(ident)
                 cleaned.append(rec)
             cleaned = list(reversed(cleaned))
-            with open(RECORDS_FILE, "w", encoding="utf-8") as f:
-                json.dump(_serialisable(cleaned), f, ensure_ascii=False, indent=2)
+            save_records(cleaned)
             st.session_state.submissions = cleaned
             st.success("Dashboard duplicates cleaned.")
             st.rerun()
@@ -3689,7 +3932,11 @@ def page_dashboard():
     st.markdown(f"**{len(filtered)} submission{'s' if len(filtered) != 1 else ''}**")
     st.markdown("")
 
-    for sub in reversed(filtered):
+    # Render newest first. Add a per-row render id so repeated/duplicate
+    # evaluations do not reuse the same Streamlit widget keys inside reports.
+    for render_idx, sub in enumerate(reversed(filtered)):
+        sub = dict(sub)
+        sub["_render_uid"] = f"dash_{render_idx}_{_submission_identity(sub)}"
         score     = sub.get("qa_score", 0); dec = sub.get("editor_decision") or "Pending"
         ded       = sub.get("deductions", {})
         cmt_count = ded.get("comment_count", 0); cmt_ded = ded.get("comment_deduction", 0)
@@ -3737,7 +3984,7 @@ def page_dashboard():
   </div>
 </div>""", unsafe_allow_html=True)
 
-        with st.expander(f"View full report — {sub.get('writer','—')} · {sub.get('date','')}"):
+        with st.expander(f"View full report · {sub.get('writer','—')} · {sub.get('date','')}"):
             render_report(sub)
 
 # ── Main ───────────────────────────────────────────────────────────────────
