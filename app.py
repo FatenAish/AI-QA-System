@@ -1106,15 +1106,13 @@ def explode_changes_to_micro_edits(changes, lang):
 
 def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
     """
-    Extra safety net for Arabic silent edits.
+    Compare the final writer handoff text with the final editor text at Arabic token level.
 
-    Google Docs exports can make the paragraph/sentence matcher miss very small
-    Arabic fixes inside long unchanged sections, for example:
-    "لا يوجد رسوم" -> "لا توجد رسوم".
-
-    This function compares the full writer/exported text against the full
-    editor/exported text at token level and returns every clean word/phrase edit
-    with surrounding context. It is used in addition to the paragraph diff.
+    This returns one row per actual token edit occurrence. It does not collapse
+    repeated edits across the article, because if the editor changed the same
+    word in two different places, those are two real edit occurrences. The
+    later dedupe step removes only the same occurrence repeated by fallback
+    diff passes.
     """
     writer_text = clean_google_doc_export_artifacts(writer_text)
     editor_text = clean_google_doc_export_artifacts(editor_text)
@@ -1130,50 +1128,117 @@ def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
     sm = difflib.SequenceMatcher(None, old_norm, new_norm, autojunk=False)
     edits = []
 
+    def add_atomic(op_name, old_value, new_value, old_pos, new_pos, parent_old="", parent_new=""):
+        old_value = str(old_value or "").strip()
+        new_value = str(new_value or "").strip()
+
+        if not old_value and not new_value:
+            return
+        if _looks_like_comment_artifact(old_value, new_value):
+            return
+        if looks_like_formatting_only(old_value, new_value):
+            return
+
+        old_clean = normalize_for_compare(old_value)
+        new_clean = normalize_for_compare(new_value)
+        if not old_clean and not new_clean:
+            return
+        if old_clean == new_clean:
+            return
+        if len(old_clean + new_clean) < 2:
+            return
+
+        old_start = max(0, min(old_pos, len(old_tokens)))
+        new_start = max(0, min(new_pos, len(new_tokens)))
+        old_end = old_start + 1 if old_value and old_start < len(old_tokens) else old_start
+        new_end = new_start + 1 if new_value and new_start < len(new_tokens) else new_start
+
+        old_ctx = _micro_context(old_tokens, old_start, old_end, window=7)
+        new_ctx = _micro_context(new_tokens, new_start, new_end, window=7)
+        if not old_ctx and not new_ctx:
+            return
+
+        edits.append({
+            "tag": op_name,
+            "original": old_value[:700],
+            "revised": new_value[:700],
+            "original_context": old_ctx[:700],
+            "revised_context": new_ctx[:700],
+            "parent_original": str(parent_old or "")[:700],
+            "parent_revised": str(parent_new or "")[:700],
+            "similarity": round(token_similarity(old_value, new_value), 3),
+            "word_delta": len(new_value.split()) - len(old_value.split()),
+            "micro_edit": True,
+            "atomic_edit": True,
+            "document_token_edit": True,
+        })
+
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op == "equal":
             continue
 
-        old_part = " ".join(old_tokens[i1:i2]).strip()
-        new_part = " ".join(new_tokens[j1:j2]).strip()
+        old_block = old_tokens[i1:i2]
+        new_block = new_tokens[j1:j2]
+        parent_old = " ".join(old_block).strip()
+        parent_new = " ".join(new_block).strip()
 
-        if not old_part and not new_part:
-            continue
-        if _looks_like_comment_artifact(old_part, new_part):
-            continue
-        if looks_like_formatting_only(old_part, new_part):
-            continue
-
-        old_clean = normalize_for_compare(old_part)
-        new_clean = normalize_for_compare(new_part)
-        if not old_clean and not new_clean:
+        if op == "delete":
+            for offset, old_value in enumerate(old_block):
+                add_atomic("delete", old_value, "", i1 + offset, j1, parent_old, parent_new)
             continue
 
-        # Avoid noisy one-character artifacts, but keep real Arabic one-word edits.
-        if len(old_clean + new_clean) < 2:
+        if op == "insert":
+            for offset, new_value in enumerate(new_block):
+                add_atomic("insert", "", new_value, i1, j1 + offset, parent_old, parent_new)
             continue
 
-        old_ctx = _micro_context(old_tokens, i1, i2, window=7)
-        new_ctx = _micro_context(new_tokens, j1, j2, window=7)
-
-        # Do not count pure context-free punctuation/spacing exports.
-        if not old_ctx and not new_ctx:
+        if op == "replace":
+            # Split a replacement block into atomic edits so the count is close to
+            # Google Docs visible edit count. Example:
+            # "قِبلة الاستثمار" -> "وجهة مفضلة للاستثمار" becomes individual
+            # token edits instead of one grouped row.
+            max_len = max(len(old_block), len(new_block))
+            for offset in range(max_len):
+                old_value = old_block[offset] if offset < len(old_block) else ""
+                new_value = new_block[offset] if offset < len(new_block) else ""
+                if old_value and new_value:
+                    sub_op = "replace"
+                    old_pos = i1 + offset
+                    new_pos = j1 + offset
+                elif old_value:
+                    sub_op = "delete"
+                    old_pos = i1 + offset
+                    new_pos = j1 + min(offset, max(len(new_block) - 1, 0))
+                else:
+                    sub_op = "insert"
+                    old_pos = i1 + min(offset, max(len(old_block) - 1, 0))
+                    new_pos = j1 + offset
+                add_atomic(sub_op, old_value, new_value, old_pos, new_pos, parent_old, parent_new)
             continue
-
-        edits.append({
-            "tag": op,
-            "original": old_part[:700],
-            "revised": new_part[:700],
-            "original_context": old_ctx[:700],
-            "revised_context": new_ctx[:700],
-            "similarity": round(token_similarity(old_part, new_part), 3),
-            "word_delta": len(new_part.split()) - len(old_part.split()),
-            "micro_edit": True,
-            "document_token_edit": True,
-        })
 
     return edits
 
+
+
+def _edit_occurrence_key(row):
+    """
+    Key for deduping the same edit occurrence once.
+
+    Same original to revised text in a different surrounding context is a real
+    repeated edit and should count again. Same original to revised text with the
+    same surrounding context is the same occurrence repeated by a fallback diff
+    pass and should count once only.
+    """
+    original = sanitize_diff_side(row.get("original", ""))
+    revised = sanitize_diff_side(row.get("revised", ""))
+    old_norm = normalize_for_compare(original)
+    new_norm = normalize_for_compare(revised)
+    old_ctx = normalize_for_compare(row.get("original_context", "") or row.get("parent_original", ""))
+    new_ctx = normalize_for_compare(row.get("revised_context", "") or row.get("parent_revised", ""))
+
+    if old_ctx or new_ctx:
+        return (old_norm[:260], new_norm[:260], old_ctx[:520], new_ctx[:520])
+    return (old_norm[:260], new_norm[:260])
 
 def merge_diff_changes(*change_groups):
     """
@@ -1181,9 +1246,9 @@ def merge_diff_changes(*change_groups):
 
     Earlier builds appended paragraph diff, token diff, session diff and endpoint
     diff together. That made the same edit block appear two or three times in
-    the report and inflated the score deduction. This helper now treats the same
-    original to revised edit as one QA issue, even when it appears more than once
-    in the article.
+    the report and inflated the score deduction. This helper now treats the same edit occurrence as one QA issue.
+    If the same wording is edited in a different surrounding context, it is a
+    separate real edit and can be counted separately.
     """
     merged = []
     seen = set()
@@ -1203,14 +1268,7 @@ def merge_diff_changes(*change_groups):
             new_norm = normalize_for_compare(revised)
             if old_norm == new_norm:
                 continue
-
-            old_ctx = normalize_for_compare(ch.get("original_context", original))
-            new_ctx = normalize_for_compare(ch.get("revised_context", revised))
-
-            # Count each unique edit once across the whole article.
-            # Same original to revised text should not be scored again just because
-            # it appears in another paragraph or another diff source.
-            key = (old_norm[:260], new_norm[:260])
+            key = _edit_occurrence_key(ch)
             if key in seen:
                 continue
             seen.add(key)
@@ -1936,9 +1994,8 @@ def _dedupe_diff_changes(changes):
     """
     Remove duplicate raw silent-edit rows before AI classification.
 
-    Same original to revised text must be scored once across the whole article.
-    Repeated identical corrections are shown/scored once even when they appear in
-    different surrounding context.
+    Count each real edit occurrence once. Repeated wording in different parts of
+    the article is kept. Duplicate rows from the same occurrence are removed.
     """
     cleaned = []
     seen = set()
@@ -1955,14 +2012,13 @@ def _dedupe_diff_changes(changes):
         if old_norm == new_norm:
             continue
 
-        key = (old_norm[:260], new_norm[:260])
-        if key in seen:
-            continue
-        seen.add(key)
-
         nd = dict(ch)
         nd["original"] = original
         nd["revised"] = revised
+        key = _edit_occurrence_key(nd)
+        if key in seen:
+            continue
+        seen.add(key)
         cleaned.append(nd)
     return cleaned
 
@@ -1971,14 +2027,11 @@ def _dedupe_classified_diff_edits(diff_classified):
     """
     Remove duplicate classified silent edits and make scoring auditable.
 
-    Final score must equal 100 minus the sum of deductions for the rows shown in
-    the report. Therefore every displayed unique edit is scored once. Repeated
-    original to revised edits are collapsed globally, even when they happen in
-    different places in the article.
+    The score must equal the deductions for the rows shown. A real occurrence is
+    scored once. If the same wording is corrected in another sentence/list item,
+    it remains a separate row because it is a separate editor action.
     """
     cleaned = []
-    # Dict, not set: we store the index of the first kept row so repeated
-    # original-to-revised edits are scored once and the strongest classification wins.
     seen = {}
     for d in diff_classified or []:
         if d.get("type") in EVENT_ONLY_EDIT_TYPES:
@@ -1996,14 +2049,13 @@ def _dedupe_classified_diff_edits(diff_classified):
         if old_norm == new_norm:
             continue
 
-        key = (old_norm[:260], new_norm[:260])
-
         nd = dict(d)
         nd["original"] = original
         nd["revised"] = revised
+        key = _edit_occurrence_key(nd)
 
-        # If the same edit was classified differently in repeated diff passes,
-        # keep the stronger deduction once instead of scoring both rows.
+        # If the same occurrence was classified differently, keep the stronger
+        # deduction once instead of scoring duplicate rows.
         if key in seen:
             existing_index = seen[key]
             try:
@@ -2394,22 +2446,9 @@ def compute_consecutive_revision_diffs(drive_svc, creds, doc_id, editor_name, re
         all_changes = _split_arabic_large_changes(all_changes)
         all_changes = explode_changes_to_micro_edits(all_changes, "Arabic")
 
-    # Count each unique original to revised edit once only.
-    cleaned = []
-    seen = set()
-    for ch in all_changes:
-        old_norm = normalize_for_compare(ch.get("original", ""))
-        new_norm = normalize_for_compare(ch.get("revised", ""))
-        if not old_norm and not new_norm:
-            continue
-        if old_norm == new_norm:
-            continue
-        key = (old_norm[:260], new_norm[:260])
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(ch)
-    all_changes = cleaned
+    # Remove duplicate rows for the same occurrence only. Keep repeated edits
+    # when they happen in different surrounding text.
+    all_changes = _dedupe_diff_changes(all_changes)
 
     # If consecutive export still found nothing, fall back to first vs final.
     if not all_changes:
@@ -2607,22 +2646,9 @@ def compute_editor_session_revision_diffs(drive_svc, creds, doc_id, revisions, w
             ch["revision_pair_number"] = pair_no
         all_changes.extend(pair_changes)
 
-    # Count each unique original to revised edit once only.
-    cleaned = []
-    seen = set()
-    for ch in all_changes:
-        old_norm = normalize_for_compare(ch.get("original", ""))
-        new_norm = normalize_for_compare(ch.get("revised", ""))
-        if not old_norm and not new_norm:
-            continue
-        if old_norm == new_norm:
-            continue
-        key = (old_norm[:260], new_norm[:260])
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(ch)
-    return cleaned
+    # Remove duplicate rows for the same occurrence only. Keep repeated edits
+    # when they happen in different surrounding text.
+    return _dedupe_diff_changes(all_changes)
 
 def extract_text_from_gdoc(doc):
     text, headings = [], []
@@ -3856,7 +3882,7 @@ def render_gdoc_report(sub):
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
         is_handoff = sub.get("diff_source") in {"editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor"}
-        mode_label = "Editor edits scored once from writer handoff version" if is_handoff else "Silent editor activity"
+        mode_label = "Editor edit occurrences from writer handoff version" if is_handoff else "Silent editor activity"
         if is_handoff:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
@@ -3867,7 +3893,7 @@ def render_gdoc_report(sub):
         # Internal API/revision details are intentionally hidden from the report UI.
         if diff_summary.get("low_count", 0):
             st.info(
-                f"Score uses each displayed silent edit once: "
+                f"Score uses each displayed edit occurrence once: "
                 f"{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts "
                 f"for {diff_summary.get('low_count')} displayed silent edits. "
                 "Formatting-only edits count as 0 pts."
@@ -3881,7 +3907,7 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer handoff version and the editor final version. Each edit is shown and scored once.")
+            st.caption("These are the actual text differences between the writer handoff version and the editor final version. Each edit occurrence is shown and scored once. Repeated wording in different places is kept as separate real edits.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
