@@ -2758,85 +2758,201 @@ def count_revision_rounds(revisions, editor_name):
 
     return rounds, len(revisions), annotated
 
+def _is_url_only_comment(text):
+    """Return True when the comment is only a URL/source reference with no instruction."""
+    value = str(text or "").strip()
+    if not value:
+        return True
+    urls = re.findall(r"https?://\S+", value)
+    if not urls:
+        return False
+    remainder = value
+    for u in urls:
+        remainder = remainder.replace(u, "")
+    remainder = re.sub(r"[\s\-–—_:،,.;؛()\[\]{}]+", "", remainder).strip()
+    return remainder == ""
+
+
+def _comment_rule_based_type(text, lang=""):
+    """
+    Deterministic comment classification.
+
+    This fixes the common bug where source/data comments were marked as grammar
+    because the AI fallback defaulted to grammar. The rules are intentionally
+    strict: comments that mention listings, wrong data, missing prices, or source
+    links are never treated as simple grammar unless they are only a bare URL.
+    """
+    raw = str(text or "").strip()
+    low = raw.lower()
+    compact = re.sub(r"\s+", " ", low)
+
+    if _is_url_only_comment(raw):
+        return "formatting"
+
+    # Arabic source / factual correction patterns.
+    factual_ar = [
+        "الاسم الصحيح", "الاسم الصح", "الصح حسب", "الصحيح حسب", "حسب اللستنج", "حسب الليستنج",
+        "اللستنج", "الليستنج", "بدل الاسم", "بدل", "السبب غلط", "غلط", "خطأ", "خطا",
+        "غير صحيح", "مش صحيح", "ليس صحيح", "غير دقيق", "مش دقيق", "الداتا", "البيانات",
+        "المصدر", "حسب المصدر", "حسب الشيت", "حسب الجدول", "من الشيت", "من الجدول",
+        "رقم غلط", "السعر غلط", "السعر غير صحيح", "العنوان غلط", "الاسم غلط", "المعلومة غلط",
+        "الرابط غلط", "اللينك غلط", "الرابط لا يعمل", "اللينك لا يعمل",
+    ]
+    if any(k in compact for k in factual_ar):
+        return "factual"
+
+    # Unsupported/wrong info removal, especially prices or claims not present in source.
+    wrong_removed_ar = [
+        "غير موجودة", "غير موجود", "مش موجودة", "مش موجود", "ما في", "لا يوجد",
+        "اسعار غير", "أسعار غير", "سعر غير", "غير مذكورة", "غير مذكور", "احذف", "احذفي",
+        "شيل", "شيلي", "نشيل", "remove", "wrong info", "unsupported",
+    ]
+    if any(k in compact for k in wrong_removed_ar) and any(k in compact for k in ["سعر", "أسعار", "اسعار", "معلومة", "معلومات", "المصدر", "اللستنج", "الليستنج", "source", "price"]):
+        return "wrong_info_removed"
+
+    # Missing info questions/requests.
+    missing_ar = [
+        "وين", "أين", "فين", "ناقص", "ناقصة", "مفقود", "مفقودة", "اضف", "أضف", "ضيف", "ضف",
+        "نضيف", "لازم نضيف", "يجب إضافة", "اذكر", "أذكر", "نذكر", "اكتب", "أكتب",
+        "الأوراق المطلوبة", "الرسوم", "الأسعار", "اسعار", "الاسعار", "السعر", "التفاصيل",
+    ]
+    if ("وين" in compact or "أين" in compact or "فين" in compact) and any(k in compact for k in ["السعر", "الأسعار", "اسعار", "الاسعار", "رسوم", "التفاصيل"]):
+        return "missing"
+    if any(k in compact for k in ["ناقص", "ناقصة", "مفقود", "مفقودة", "not mentioned", "missing", "please add", "add ", "include"]):
+        return "missing"
+
+    # Structure-only instructions.
+    structural_ar = [
+        "بارجراف", "فقرة", "نقسم", "قسم", "ترتيب", "الترتيب", "هيكلة", "مكانه غلط",
+        "انقل", "نقل", "عنوان", "هيدر", "section", "paragraph", "rewrite", "restructure", "move this",
+    ]
+    if any(k in compact for k in structural_ar):
+        return "structural"
+
+    # English source / factual correction patterns.
+    factual_en = [
+        "wrong", "incorrect", "not correct", "inaccurate", "source", "listing", "according to listing",
+        "correct name", "correct title", "should be", "must be", "price is", "age is", "data", "fact",
+        "spreadsheet", "sheet", "from the sheet", "from source", "from the source", "url goes", "link goes",
+        "not available in source", "not in source", "not on source", "not in listing", "listing says",
+    ]
+    if any(k in compact for k in factual_en):
+        # Bare links were already caught as formatting. A source instruction is factual/source related.
+        return "factual"
+
+    missing_en = [
+        "missing", "please add", "add ", "include", "mention", "not mentioned", "where is", "where are",
+        "we need", "needs", "required", "lacks",
+    ]
+    if any(k in compact for k in missing_en):
+        return "missing"
+
+    structural_en = ["rewrite", "restructure", "paragraph", "section", "header", "move", "wrong place", "format as paragraph"]
+    if any(k in compact for k in structural_en):
+        return "structural"
+
+    rephrase_en = ["tone", "style", "brand", "too generic", "generic", "sounds", "rephrase"]
+    if any(k in compact for k in rephrase_en):
+        return "rephrase"
+
+    # Arabic language-only cues.
+    arabic_language_ar = ["إملاء", "املاء", "نحو", "صياغة", "لغة", "لغوي", "لغوية", "تشكيل", "همزة"]
+    if any(k in compact for k in arabic_language_ar):
+        return "arabic_language"
+
+    return "grammar"
+
+
+def _normalise_comment_type(ctype):
+    ctype = str(ctype or "").strip().lower()
+    aliases = {
+        "data accuracy": "factual",
+        "source": "factual",
+        "source_related": "factual",
+        "source-related": "factual",
+        "fact": "factual",
+        "missing_info": "missing",
+        "missing info": "missing",
+        "language": "grammar",
+        "phrasing": "grammar",
+        "format": "formatting",
+        "formatting_only": "formatting",
+        "link_only": "formatting",
+    }
+    ctype = aliases.get(ctype, ctype)
+    return ctype if ctype in COMMENT_WEIGHTS else "grammar"
+
+
 def classify_comments_ai(comments, platform, lang):
-    """Use AI to classify each comment with weighted type."""
+    """Classify each Google Doc comment with reliable source/factual guardrails."""
     if not comments:
         return []
 
     c_txt = "\n".join(f"  [{i+1}] {c['text']}" for i, c in enumerate(comments))
-    prompt = f"""You are a content QA classifier for {platform} ({lang} content).
+    prompt = f"""You are a strict editorial QA classifier for {platform}. Content language: {lang}.
 
 Classify each editor comment into exactly one type:
-- "factual"     → Wrong data, incorrect facts, wrong names/prices/dates/locations
-- "missing"     → Missing critical information that must be added
-- "structural"  → Section needs rewriting, wrong structure, copied from source
-- "grammar"     → Grammar, phrasing, minor wording fixes
+- "factual" → wrong source/data, wrong name, wrong reason, wrong price/date/location, or correction based on listing/source/sheet.
+- "wrong_info_removed" → comment says information/prices/claims are not in the source and should be removed.
+- "missing" → required information is missing or the editor asks where a required item is.
+- "structural" → paragraph/section/header/structure needs changing, without a clear wrong fact.
+- "arabic_language" → Arabic grammar/spelling/word agreement only, no factual/source issue.
+- "grammar" → English grammar/punctuation/minor phrasing only, no factual/source issue.
+- "rephrase" → style/tone/brand voice rewrite only.
+- "formatting" → only a bare source link or formatting note with no correction.
+
+Arabic examples:
+- "الاسم الصحيح حسب اللستنج: فلل سيدرا 1 بدل الاسم" = factual
+- "السبب غلط" = factual
+- "مشان في كثير أسعار غير موجودة، الأفضل نعمله بارجراف" = wrong_info_removed
+- "وين الأسعار؟" = missing
+- A bare Google Sheets/Docs link only = formatting
+
+Important:
+- Do NOT classify listing/source/sheet/data/price comments as grammar.
+- If a comment says something is wrong, use factual unless it is only grammar.
+- If a comment asks for missing prices/details, use missing.
+- Every comment must be classified.
 
 Comments:
 {c_txt}
 
 Return ONLY raw JSON, no markdown:
-{{"classifications": [{{"index": 1, "type": "factual"}}, {{"index": 2, "type": "grammar"}}]}}
+{{"classifications": [{{"index": 1, "type": "factual"}}, {{"index": 2, "type": "missing"}}]}}
+"""
 
-Rules:
-- Every comment must be classified
-- Use only the 5 types listed above
-- When in doubt between factual and structural, pick factual if wrong info is involved"""
-
+    ai_map = {}
     try:
-        raw    = call_ai(prompt)
+        raw = call_ai(prompt)
         result = parse_json_response(raw)
         if result and "classifications" in result:
-            cls_map = {c["index"]: c["type"] for c in result["classifications"]}
-            classified = []
-            for i, c in enumerate(comments, 1):
-                ctype = cls_map.get(i, "grammar")
-                if ctype not in COMMENT_WEIGHTS:
-                    ctype = "grammar"
-                w = COMMENT_WEIGHTS[ctype]
-                classified.append({
-                    "author":    c["author"],
-                    "email":     c.get("email", ""),
-                    "text":      c["text"],
-                    "type":      ctype,
-                    "label":     w["label"],
-                    "deduction": w["deduction"],
-                    "color":     w["color"],
-                    "tc":        w["tc"],
-                })
-            return classified
+            for item in result.get("classifications", []):
+                try:
+                    ai_map[int(item.get("index"))] = _normalise_comment_type(item.get("type"))
+                except Exception:
+                    continue
     except Exception:
-        pass
+        ai_map = {}
 
-    # Fallback: keyword-based
     classified = []
-    for c in comments:
-        low = c["text"].lower()
-        if any(k in low for k in ["wrong","incorrect","not correct","inaccurate","source","from google",
-                                   "copied","no apartments","under construction","url goes","link goes",
-                                   "mins away","minutes away","data","fact","taken from","from lpv","lpv",
-                                   "payment plan","off-plan","off plan","price","aed","sqft","sq ft",
-                                   "bedroom","studio","floor","percentage","it is","it's","should be",
-                                   "in the source","the source","from the brochure","from the source"]):
-            ctype = "factual"
-        elif any(k in low for k in ["missing","please add","include","mention","not mentioned",
-                                     "should mention","we need","please mention","go through",
-                                     "please write","notable","specific","more details","lacks",
-                                     "branch","skip this","use another","variation","another link",
-                                     "another variation","extensively"]):
-            ctype = "missing"
-        elif any(k in low for k in ["rewrite","restructure","section should","reorganize",
-                                     "wrong section","wrong place","belongs","move this","header"]):
-            ctype = "structural"
-        elif any(k in low for k in ["brand","tone","style","voice","too general","sounds","generic"]):
-            ctype = "rephrase"
+    for i, c in enumerate(comments, 1):
+        text = c.get("text", "")
+        rule_type = _comment_rule_based_type(text, lang)
+        ai_type = ai_map.get(i, "")
+
+        # Deterministic source/data rules override AI grammar/rephrase mistakes.
+        # This is the key fix for Arabic comments such as "الاسم الصحيح حسب اللستنج".
+        if rule_type in {"factual", "wrong_info_removed", "missing", "structural", "formatting", "arabic_language"}:
+            ctype = rule_type
         else:
-            ctype = "grammar"
+            ctype = ai_type or rule_type
+
+        ctype = _normalise_comment_type(ctype)
         w = COMMENT_WEIGHTS[ctype]
         classified.append({
-            "author":    c["author"],
+            "author":    c.get("author", ""),
             "email":     c.get("email", ""),
-            "text":      c["text"],
+            "text":      text,
             "type":      ctype,
             "label":     w["label"],
             "deduction": w["deduction"],
@@ -2844,6 +2960,7 @@ Rules:
             "tc":        w["tc"],
         })
     return classified
+
 
 def apply_gdoc_deductions(classified_comments, editor_rounds):
     """Legacy — kept for backward compat."""
