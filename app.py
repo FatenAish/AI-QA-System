@@ -1974,13 +1974,9 @@ def _dedupe_classified_diff_edits(diff_classified):
             revised_norm[:300],
         )
 
-        # For larger paragraph edits, context helps distinguish two genuinely
-        # separate changes. For tiny word-level edits, the broad key is safer
-        # because the same edit is often duplicated with slightly different
-        # context windows.
-        if len(original_norm.split()) > 4 or len(revised_norm.split()) > 4:
-            key = key + (old_ctx[:180], new_ctx[:180])
-
+        # Use a broad key so score count and displayed report count stay aligned.
+        # Google Docs exports can return the same edit with slightly different
+        # context windows, especially for Arabic text and autosave revisions.
         if key in seen:
             continue
         seen.add(key)
@@ -2882,47 +2878,39 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
 
 def capped_low_impact_deduction(items):
     """
-    Score silent edits with a fair cap for low-impact cleanup.
+    Score silent edits literally from the visible issue rows.
 
-    Factual/source/missing/structural issues always count normally. Pure
-    formatting has 0 deduction. Grammar/rephrase/Arabic-language cleanup is
-    capped at 3 points when there are no high/medium-impact silent edits, so a
-    heavily polished article is not punished like a factual failure.
+    Formatting-only edits stay at 0 points. All other silent-edit deductions
+    count exactly as shown in the report, so the final score always matches the
+    issue counts and the displayed deducted points.
     """
     events = [d for d in items if d.get("type") in EVENT_ONLY_EDIT_TYPES]
     high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
-    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES and d.get("type") not in EVENT_ONLY_EDIT_TYPES]
     low = [d for d in items if d.get("type") in LOW_IMPACT_EDIT_TYPES]
+    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES and d.get("type") not in EVENT_ONLY_EDIT_TYPES]
 
     high_total = sum(float(d.get("deduction", 0)) for d in high)
     medium_total = sum(float(d.get("deduction", 0)) for d in medium)
-    raw_low_total = sum(float(d.get("deduction", 0)) for d in low)
+    low_total = sum(float(d.get("deduction", 0)) for d in low)
+    total = high_total + medium_total + low_total
 
-    low_cap = 3.0
-    low_cap_applied = False
-    if high_total == 0 and medium_total == 0 and raw_low_total > low_cap:
-        low_total = low_cap
-        low_cap_applied = True
-    else:
-        low_total = raw_low_total
-
-    return high_total + medium_total + low_total, {
+    return total, {
         "event_count": len(events),
         "high_count": len(high),
         "medium_count": len(medium),
         "low_count": len(low),
         "formatting_count": len([d for d in low if d.get("type") == "formatting"]),
-        "raw_low_deduction": round(raw_low_total, 1),
-        "low_cap_applied": low_cap_applied,
-        "low_cap": low_cap,
+        "raw_low_deduction": round(low_total, 1),
+        "low_cap_applied": False,
+        "low_cap": None,
         "low_capped_deduction": round(low_total, 1),
-        "low_uncapped_deduction": round(raw_low_total, 1),
+        "low_uncapped_deduction": round(low_total, 1),
     }
 
 def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
     """
     Score = 100 − comment deductions − silent-edit deductions − rounds penalty.
-    Formatting-only edits are 0 points. Low-impact wording/grammar cleanup is capped fairly.
+    Formatting-only edits are 0 points. All other silent edits count exactly as shown.
     The same silent edit is deduped before scoring, so the report count and the
     score calculation stay aligned.
     """
@@ -3623,21 +3611,14 @@ def render_gdoc_report(sub):
         w   = COMMENT_WEIGHTS.get(ctype, COMMENT_WEIGHTS["grammar"])
         raw_tot = round(sum(float(i.get("deduction", 0)) for i in items), 1)
         if ctype in LOW_IMPACT_EDIT_TYPES:
-            # Low-impact rows are potential points before the fair cap. They are
-            # not the final score deduction unless no cap is applied.
-            val = "0 pts" if raw_tot == 0 else f'{raw_tot} pts before cap'
-            diff_rows += brow("base-row", f'Silent edits found · {w["label"]} ({len(items)} found)', val)
+            val = "0 pts" if raw_tot == 0 else f'−{raw_tot} pts'
+            row_cls = "ok-row" if raw_tot == 0 else "ded-row"
+            diff_rows += brow(row_cls, f'Silent edits deducted · {w["label"]} ({len(items)} found)', val)
         else:
             high_medium_actual += raw_tot
             row_cls = "ded-row" if ctype in HIGH_IMPACT_EDIT_TYPES else "base-row"
             diff_rows += brow(row_cls, f'Silent edits deducted · {w["label"]} ({len(items)} found)', f'−{raw_tot} pts')
 
-    if diff_summary.get("low_count", 0):
-        actual_low = diff_summary.get("low_capped_deduction") if diff_summary.get("low_cap_applied") else diff_summary.get("low_uncapped_deduction", diff_summary.get("raw_low_deduction",0))
-        label = f'Actual low-impact deduction ({diff_summary.get("low_count",0)} grammar/rephrase/formatting edits)'
-        if diff_summary.get("low_cap_applied"):
-            label += f' capped at {diff_summary.get("low_cap", 3.0)} pts'
-        diff_rows += brow("ded-row", label, f'−{actual_low} pts')
     if not diff_rows and ded.get("diff_count", 0) == 0:
         diff_rows = brow("ok-row", "No silent edits detected", "")
 
@@ -3681,16 +3662,12 @@ def render_gdoc_report(sub):
         pasted_count = sub.get("pasted_revision_count", 0)
         manual_count = sub.get("manual_visible_revision_count", 0)
         # Internal API/revision details are intentionally hidden from the report UI.
-        if diff_summary.get("low_cap_applied"):
+        if diff_summary.get("low_count", 0):
             st.info(
-                f"Score uses the actual counted deduction: {diff_summary.get('low_capped_deduction')} pts. "
-                f"The raw low-impact total before the fair cap was {diff_summary.get('raw_low_deduction')} pts."
-            )
-        elif diff_summary.get("low_count", 0):
-            st.info(
-                f"Score uses the actual counted deduction: "
+                f"Score uses the same silent-edit deductions shown in the breakdown: "
                 f"{diff_summary.get('low_uncapped_deduction', diff_summary.get('raw_low_deduction'))} pts "
-                f"for {diff_summary.get('low_count')} grammar/rephrase/formatting edits."
+                f"for {diff_summary.get('low_count')} grammar/rephrase/formatting edits. "
+                "Formatting-only edits count as 0 pts."
             )
 
         # Human-readable edit report: writer version vs editor version.
@@ -3701,7 +3678,7 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer's latest version and the editor's latest version. The system may count several small changes inside one paragraph as separate edits.")
+            st.caption("These are the actual text differences between the writer handoff version and the editor final version. The score uses the same counted edits shown here.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
