@@ -3594,33 +3594,44 @@ def page_gdoc_submit():
         writer_rev, editor_rev = handoff_writer_rev, handoff_editor_rev
 
         if handoff_writer_text and handoff_editor_text:
-            # Score ONE comparison only: writer handoff text vs editor final text.
-            # Do not append session-level revision diffs to endpoint diffs, because
-            # that double/triple counts the same edit when Google exports several
-            # snapshots for the same visible editing session.
-            endpoint_changes = _prepare_arabic_or_normal_changes(
-                handoff_writer_text, handoff_editor_text, lang
+            # Primary silent-edit logic:
+            # Count the real text-change blocks inside the selected editor session.
+            # This compares consecutive exportable Google revisions from the writer
+            # handoff until the editor final/current text. One editor session can
+            # contain several text changes, and each visible change block is counted
+            # once. We do NOT add endpoint diff on top of this, because that would
+            # double-score the same work.
+            session_changes = compute_editor_session_revision_diffs(
+                parsed["drive_svc"], parsed["svc_creds"],
+                extract_doc_id(doc_url), parsed.get("revisions", []),
+                handoff_writer_rev, handoff_editor_rev, handoff_editor_text, lang,
             )
-            diff_changes = _dedupe_diff_changes(endpoint_changes)
+
+            if session_changes:
+                diff_changes = _dedupe_diff_changes(session_changes)
+                diff_source = "editor_session_consecutive_revision_text_diffs"
+                handoff_status = "editor_session_consecutive_revision_text_diffs"
+            else:
+                # Fallback when Google Drive exposes only the two endpoint texts.
+                # This is a net final-text comparison, not the Google Docs UI
+                # yellow-highlight edit counter.
+                endpoint_changes = _prepare_arabic_or_normal_changes(
+                    handoff_writer_text, handoff_editor_text, lang
+                )
+                diff_changes = _dedupe_diff_changes(endpoint_changes)
+                diff_source = handoff_status
 
             # Safety net for Google Docs/Drive mismatch:
-            # The Google Docs UI may show the editor's saves, while Drive revision
-            # export returns identical/stale text for those revision IDs. If the
-            # strict writer→editor export produces no text differences but the live
-            # Google Doc text is different from the writer handoff, use the live doc
-            # as the editor-final text. This prevents false 100/100 results.
-            #
-            # Important: this is only used when the strict export found nothing.
-            # The primary logic still selects the writer handoff BEFORE the editor
-            # session and ignores later writer saves whenever exportable editor text
-            # is available.
+            # If neither session snapshots nor endpoint export produce differences,
+            # but the live doc differs from the writer handoff, use the live doc as
+            # the editor-final text. This prevents false 100/100 results.
             current_doc_text = parsed.get("text", "") or ""
             if (not diff_changes) and current_doc_text and normalize_for_compare(handoff_writer_text) != normalize_for_compare(current_doc_text):
                 current_doc_changes = _prepare_arabic_or_normal_changes(
                     handoff_writer_text, current_doc_text, lang
                 )
                 if current_doc_changes:
-                    diff_changes = current_doc_changes
+                    diff_changes = _dedupe_diff_changes(current_doc_changes)
                     diff_source = "writer_handoff_vs_current_doc_safety_fallback"
                     handoff_status = "writer_handoff_vs_current_doc_safety_fallback"
                     handoff_editor_rev = _current_file_revision_stub(parsed.get("current_file_meta", {}))
@@ -3644,6 +3655,7 @@ def page_gdoc_submit():
         handoff_status = "not_enough_revisions"
 
     successful_handoff_statuses = {
+        "editor_session_consecutive_revision_text_diffs",
         "editor_session_writer_handoff_vs_editor_final",
         "editor_session_writer_handoff_vs_current_editor_doc",
         "editor_not_in_drive_revisions_used_current_doc_text",
@@ -3855,8 +3867,13 @@ def render_gdoc_report(sub):
         activity_source = sub.get("revision_activity_source", "drive_revisions_api")
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
-        is_handoff = sub.get("diff_source") in {"editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor"}
-        mode_label = "Editor edit occurrences from writer handoff version" if is_handoff else "Silent editor activity"
+        is_handoff = sub.get("diff_source") in {"editor_session_consecutive_revision_text_diffs", "editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor", "writer_handoff_vs_current_doc_safety_fallback"}
+        if sub.get("diff_source") == "editor_session_consecutive_revision_text_diffs":
+            mode_label = "Silent edits from editor revision session"
+        elif is_handoff:
+            mode_label = "Editor edit occurrences from writer handoff version"
+        else:
+            mode_label = "Silent editor activity"
         if is_handoff:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
@@ -3881,7 +3898,10 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer handoff version and the editor final version. Each edit occurrence is shown and scored once. Repeated wording in different places is kept as separate real edits.")
+            if sub.get("diff_source") == "editor_session_consecutive_revision_text_diffs":
+                st.caption("These are text-change blocks detected inside the selected editor revision session. Each visible change block is shown and scored once. Multiple changes inside one Google Docs session are counted separately when the API exposes the before/after text.")
+            else:
+                st.caption("These are the net text differences between the writer handoff version and the editor final version. Each edit occurrence is shown and scored once. Google Docs UI edit totals may differ because Google does not expose every highlighted UI edit through the API.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
