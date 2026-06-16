@@ -2548,29 +2548,30 @@ def _prepare_arabic_or_normal_changes(writer_text, editor_text, lang):
     """
     Build ONE scored silent-edit list for a writer/editor comparison.
 
-    Arabic articles need word-level detection, but the token diff must not be
-    added on top of the paragraph diff as a second scored pass. For Arabic we
-    use the full-document token diff as the primary list because it catches small
-    language edits and gives one row per actual text replacement. For English we
-    use the paragraph/sentence diff.
+    Scoring uses atomic visible text edits from the final writer handoff text
+    compared with the final editor text. This avoids two bad outcomes:
+    1) paragraph-level grouping that hides many silent edits, especially in English;
+    2) combining paragraph diff + token diff + revision diff, which double counts.
+
+    The rule is simple: one final text comparison, one token-level diff pass,
+    then dedupe only exact duplicate rows for the same occurrence. Repeated edits
+    in different places stay separate, because they are separate visible edits.
     """
     paragraph_changes = compute_diff(writer_text, editor_text)
 
-    if lang == "Arabic" or changes_contain_arabic(paragraph_changes):
-        token_changes = compute_document_level_token_edits(writer_text, editor_text, "Arabic")
-        # If token diff is available, use it as the ONLY scored Arabic diff list.
-        # Do not merge it with paragraph diff, because that double-scores edits.
-        if token_changes:
-            return _dedupe_diff_changes(token_changes)
+    # Primary path for BOTH English and Arabic: atomic token-level final text diff.
+    # This is what catches small silent edits like "the" -> "any of the" or
+    # "A great family spot" -> "This is a great spot for families" instead of
+    # hiding them inside one large paragraph rewrite.
+    token_changes = compute_document_level_token_edits(writer_text, editor_text, lang)
+    if token_changes:
+        return _dedupe_diff_changes(token_changes)
 
-        # Fallback only when token diff cannot produce useful rows.
+    # Fallback only when token diff cannot produce readable rows.
+    if lang == "Arabic" or changes_contain_arabic(paragraph_changes):
         paragraph_micro_changes = _split_arabic_large_changes(paragraph_changes)
         paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
         return _dedupe_diff_changes(paragraph_micro_changes)
-
-    if should_use_arabic_micro_edits(paragraph_changes, lang):
-        paragraph_changes = _split_arabic_large_changes(paragraph_changes)
-        paragraph_changes = explode_changes_to_micro_edits(paragraph_changes, "Arabic")
 
     return _dedupe_diff_changes(paragraph_changes)
 
@@ -3882,7 +3883,7 @@ def render_gdoc_report(sub):
         manual_sources = {"manual_google_docs_version_history_paste", "manual_google_docs_version_history_name_count", "manual_visible_revision_count_override"}
         count_label = "visible revision saves" if activity_source in manual_sources else "API revision saves"
         is_handoff = sub.get("diff_source") in {"editor_session_writer_handoff_vs_editor_final", "editor_handoff_last_writer_vs_last_editor"}
-        mode_label = "Editor edit occurrences from writer handoff version" if is_handoff else "Silent editor activity"
+        mode_label = "Atomic silent edits scored from writer handoff version" if is_handoff else "Silent editor activity"
         if is_handoff:
             st.markdown(f"#### {mode_label} — {text_change_count} detected edits")
         else:
@@ -3907,7 +3908,7 @@ def render_gdoc_report(sub):
         with st.expander(f"View all editor edits · {len(report_edits)} detected edits", expanded=False):
             st.markdown("### Total")
             st.markdown(f"**{len(report_edits)} detected text edits**")
-            st.caption("These are the actual text differences between the writer handoff version and the editor final version. Each edit occurrence is shown and scored once. Repeated wording in different places is kept as separate real edits.")
+            st.caption("These are the atomic visible text differences between the writer handoff version and the editor final version. Each displayed edit is scored once. Repeated wording in different places is kept as separate real edits.")
 
             st.markdown("### All edits")
             for idx, d in enumerate(report_edits, 1):
