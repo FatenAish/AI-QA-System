@@ -1021,20 +1021,20 @@ def _micro_context(tokens, start, end, window=5):
 
 def _explode_change_to_micro_edits(change, lang):
     """
-    Break Arabic paragraph-level replace blocks into individual word/phrase edits.
+    Break large replace blocks into individual word/phrase edits for all languages.
 
-    The old version was too conservative and could keep short Arabic paragraph
-    replacements grouped as one edit. This version explodes every valid Arabic
-    replace block into token-level edits whenever a clean micro edit is detected.
+    Earlier builds only exploded Arabic replacements. That made English editor
+    sessions look artificially small because several separate changes inside one
+    sentence or paragraph were grouped into one silent edit. This function now
+    applies the same token-level logic to English and Arabic.
     """
     original = change.get("original", "") or ""
     revised = change.get("revised", "") or ""
     tag = change.get("tag", "")
 
-    has_arabic = re.search(r"[\u0600-\u06FF]", original + revised) is not None
-
-    # Only explode replace blocks for Arabic content.
-    if tag != "replace" or (lang != "Arabic" and not has_arabic):
+    # Only replace blocks can be safely exploded into smaller visible edits.
+    # This is language-neutral: English and Arabic both need micro edit support.
+    if tag != "replace":
         return [change]
 
     old_tokens = _tokenize_for_micro_diff(original)
@@ -1106,8 +1106,8 @@ def explode_changes_to_micro_edits(changes, lang):
 
 def compute_document_level_token_edits(writer_text, editor_text, lang="Arabic"):
     """
-    Compare the final writer handoff text with the final editor text using one
-    token diff pass, then return one row per contiguous edited phrase.
+    Compare two text snapshots using one token diff pass, then return one row
+    per contiguous edited phrase.
 
     This is intentionally NOT one row per changed word. Counting every changed
     word inflated examples like Aquaventure from around 24 visible edits to 42.
@@ -1198,10 +1198,11 @@ def _edit_occurrence_key(row):
     """
     Key for deduping the same edit occurrence once.
 
-    Same original to revised text in a different surrounding context is a real
-    repeated edit and should count again. Same original to revised text with the
-    same surrounding context is the same occurrence repeated by a fallback diff
-    pass and should count once only.
+    The key is intentionally strict enough to avoid swallowing valid repeated
+    edits. Same original/revised wording in a different context remains a real
+    separate edit occurrence. Duplicate rows from the same revision diff pass are
+    removed. Revision pair metadata is included when available so separate editor
+    sessions do not overwrite each other.
     """
     original = sanitize_diff_side(row.get("original", ""))
     revised = sanitize_diff_side(row.get("revised", ""))
@@ -1210,9 +1211,15 @@ def _edit_occurrence_key(row):
     old_ctx = normalize_for_compare(row.get("original_context", "") or row.get("parent_original", ""))
     new_ctx = normalize_for_compare(row.get("revised_context", "") or row.get("parent_revised", ""))
 
+    rev_from = str(row.get("revision_from", "") or "")
+    rev_to = str(row.get("revision_to", "") or "")
+    rev_pair = str(row.get("revision_pair_number", "") or "")
+    revision_key = (rev_from, rev_to, rev_pair) if (rev_from or rev_to or rev_pair) else ()
+
+    # Wider context prevents unrelated repeated edits from being merged.
     if old_ctx or new_ctx:
-        return (old_norm[:260], new_norm[:260], old_ctx[:520], new_ctx[:520])
-    return (old_norm[:260], new_norm[:260])
+        return (old_norm[:320], new_norm[:320], old_ctx[:900], new_ctx[:900]) + revision_key
+    return (old_norm[:320], new_norm[:320]) + revision_key
 
 def merge_diff_changes(*change_groups):
     """
@@ -2522,32 +2529,22 @@ def _prepare_arabic_or_normal_changes(writer_text, editor_text, lang):
     """
     Build ONE scored silent-edit list for a writer/editor comparison.
 
-    Arabic articles need word-level detection, but the token diff must not be
-    added on top of the paragraph diff as a second scored pass. For Arabic we
-    use the full-document token diff as the primary list because it catches small
-    language edits and gives one row per actual text replacement. For English we
-    use the paragraph/sentence diff.
+    The same logic now runs for English and Arabic:
+    1. Try document-level token diff first, because it catches multiple edits
+       inside one Google Docs revision session or one long sentence.
+    2. Fall back to paragraph/sentence diff only if token diff cannot produce rows.
+    3. Never add token diff on top of paragraph diff. One comparison creates one
+       scored list, so the same edit is not counted twice.
     """
+    token_changes = compute_document_level_token_edits(writer_text, editor_text, lang or "English")
+    if token_changes:
+        return _dedupe_diff_changes(token_changes)
+
     paragraph_changes = compute_diff(writer_text, editor_text)
-
-    if lang == "Arabic" or changes_contain_arabic(paragraph_changes):
-        token_changes = compute_document_level_token_edits(writer_text, editor_text, "Arabic")
-        # If token diff is available, use it as the ONLY scored Arabic diff list.
-        # Do not merge it with paragraph diff, because that double-scores edits.
-        if token_changes:
-            return _dedupe_diff_changes(token_changes)
-
-        # Fallback only when token diff cannot produce useful rows.
-        paragraph_micro_changes = _split_arabic_large_changes(paragraph_changes)
-        paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_micro_changes, "Arabic")
-        return _dedupe_diff_changes(paragraph_micro_changes)
-
-    if should_use_arabic_micro_edits(paragraph_changes, lang):
-        paragraph_changes = _split_arabic_large_changes(paragraph_changes)
-        paragraph_changes = explode_changes_to_micro_edits(paragraph_changes, "Arabic")
-
-    return _dedupe_diff_changes(paragraph_changes)
-
+    # Large paragraph-level replacements can still hide several edits, so explode
+    # replace blocks for all languages during fallback.
+    paragraph_micro_changes = explode_changes_to_micro_edits(paragraph_changes, lang or "English")
+    return _dedupe_diff_changes(paragraph_micro_changes)
 
 def compute_editor_session_revision_diffs(drive_svc, creds, doc_id, revisions, writer_rev, editor_rev, editor_final_text, lang):
     """
