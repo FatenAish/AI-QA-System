@@ -1513,7 +1513,7 @@ def _name_matches_revision_user(name, revision):
 
     matched = 0
     for nt in needle_tokens:
-        if any(nt == lt or nt in lt or lt in nt for label_tokens):
+        if any(nt == lt or nt in lt or lt in nt for lt in label_tokens):
             matched += 1
 
     if any(strong_token_match(first_token, lt) for lt in label_tokens):
@@ -1668,7 +1668,7 @@ def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor
     base_rev = ordered[-2]
     final_rev = ordered[-1]
     base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
-    final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
+    final_text = export_revision_text(drive_svc, doc_id, final_rev["id"])
     if base_text and final_text and normalize_for_compare(base_text) != normalize_for_compare(final_text):
         return base_text, final_text, base_rev, final_rev, "fallback_latest_vs_previous_revision"
 
@@ -2596,4 +2596,276 @@ def apply_gdoc_deductions(classified_comments, editor_rounds):
 def capped_low_impact_deduction(items):
     events = [d for d in items if d.get("type") in EVENT_ONLY_EDIT_TYPES]
     high = [d for d in items if d.get("type") in HIGH_IMPACT_EDIT_TYPES]
-    low = [d for d in items if d.get("type") in LOW_IMPACT_
+    low = [d for d in items if d.get("type") in LOW_IMPACT_EDIT_TYPES]
+    medium = [d for d in items if d.get("type") not in HIGH_IMPACT_EDIT_TYPES and d.get("type") not in LOW_IMPACT_EDIT_TYPES and d.get("type") not in EVENT_ONLY_EDIT_TYPES]
+
+    high_total = sum(float(d.get("deduction", 0)) for d in high)
+    medium_total = sum(float(d.get("deduction", 0)) for d in medium)
+    low_total = sum(float(d.get("deduction", 0)) for d in low)
+    total = high_total + medium_total + low_total
+
+    return total, {
+        "event_count": len(events),
+        "high_count": len(high),
+        "medium_count": len(medium),
+        "low_count": len(low),
+        "formatting_count": len([d for d in low if d.get("type") == "formatting"]),
+        "raw_low_deduction": round(low_total, 1),
+        "low_cap_applied": False,
+        "low_cap": None,
+        "low_capped_deduction": round(low_total, 1),
+        "low_uncapped_deduction": round(low_total, 1),
+    }
+
+def apply_gdoc_deductions_full(classified_comments, diff_classified, editor_rounds):
+    diff_classified = _dedupe_classified_diff_edits(diff_classified)
+    comment_deduction = sum(float(c.get("deduction", 0)) for c in classified_comments)
+
+    diff_deduction, diff_summary = capped_low_impact_deduction(diff_classified)
+
+    rounds_penalty = max(0, (editor_rounds - 1)) * REVISION_ROUND_PENALTY
+
+    total_deduction = comment_deduction + diff_deduction + rounds_penalty
+    final = max(0, round(100 - total_deduction, 1))
+
+    by_type = {}
+    for c in classified_comments:
+        by_type.setdefault(c.get("type", "grammar"), []).append(c)
+
+    diff_by_type = {}
+    for d in diff_classified:
+        diff_by_type.setdefault(d.get("type", "grammar"), []).append(d)
+
+    return final, {
+        "base_score":         100,
+        "comment_count":      len(classified_comments),
+        "comment_deduction":  round(comment_deduction, 1),
+        "diff_count":         len(diff_classified),
+        "diff_deduction":     round(diff_deduction, 1),
+        "diff_summary":       diff_summary,
+        "by_type":            by_type,
+        "diff_by_type":       diff_by_type,
+        "editor_rounds":      editor_rounds,
+        "rounds_penalty":     rounds_penalty,
+        "final_score":        final,
+    }
+
+# ── AI feedback (text only) ────────────────────────────────────────────────
+def run_qa_feedback(title, content, writer, ctype, lang, platform, headings, links, comments):
+    if not comments:
+        scores = {cat: {"score": mx, "feedback": "No editor comments. Full marks awarded.", "comment_refs": []}
+                  for cat, mx in CAT_MAX.items()}
+        return {"scores": scores, "total": sum(CAT_MAX.values()),
+                "overall_feedback": "No editor comments found. All categories awarded full marks.",
+                "key_strengths": [], "areas_for_improvement": [], "suggestions": []}
+
+    c_txt = "\n".join(f"  Comment {i+1} [{c['author']}]: {c['text']}" for i, c in enumerate(comments))
+    prompt = f"""You are a content QA evaluator for {platform} ({lang}).
+Article: "{title}" by {writer} ({ctype})
+
+Editor comments:
+{c_txt}
+
+Article excerpt:
+{content[:2000]}
+
+Return ONLY a raw JSON object — no markdown, no explanation.
+
+{{
+  "scores": {{
+    "Content Quality":    {{"score": <0-25>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "SEO & Structure":    {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Language & Grammar": {{"score": <0-20>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Brand Voice":        {{"score": <0-15>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Readability & Flow": {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<nums>]}},
+    "Originality":        {{"score": <0-10>, "feedback": "<brief>", "comment_refs": [<nums>]}}
+  }},
+  "total": <sum>,
+  "overall_feedback": "<2-3 sentence summary>",
+  "key_strengths": ["<strength>"],
+  "areas_for_improvement": ["<area>"],
+  "suggestions": [
+    {{"number": 1, "action": "<fix>", "category": "<category>"}},
+    {{"number": 2, "action": "<fix>", "category": "<category>"}}
+  ]
+}}
+
+Rules: Score based ONLY on the editor comments. Categories not mentioned keep their maximum score."""
+
+    try:
+        raw    = call_ai(prompt)
+        result = parse_json_response(raw)
+        if result and "scores" in result:
+            for cat, mx in CAT_MAX.items():
+                if cat not in result["scores"]:
+                    result["scores"][cat] = {"score": mx, "feedback": "No issues flagged.", "comment_refs": []}
+            return result
+    except Exception:
+        pass
+
+    scores = {cat: {"score": mx, "feedback": "Manual review required — AI unavailable.", "comment_refs": []}
+              for cat, mx in CAT_MAX.items()}
+    return {"scores": scores, "total": sum(CAT_MAX.values()),
+            "overall_feedback": f"AI feedback unavailable. {len(comments)} editor comment(s) found.",
+            "key_strengths": [], "areas_for_improvement": [c["text"][:80] for c in comments[:3]], "suggestions": []}
+
+# ── File parsers (existing) ────────────────────────────────────────────────
+def extract_docx(raw):
+    if not DOCX_OK:
+        return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "python-docx not installed"}
+    import zipfile
+    from lxml import etree as _etree
+    doc = Document(BytesIO(raw))
+    text, headings, links = [], [], []
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if not t: continue
+        text.append(t)
+        s = p.style.name
+        if   s.startswith("Heading 1"): headings.append({"level": "H1", "text": t})
+        elif s.startswith("Heading 2"): headings.append({"level": "H2", "text": t})
+        elif s.startswith("Heading 3"): headings.append({"level": "H3", "text": t})
+    for rel in doc.part.rels.values():
+        if "hyperlink" in rel.reltype: links.append(rel._target)
+    comments = []
+    try:
+        WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        with zipfile.ZipFile(BytesIO(raw)) as z:
+            if "word/comments.xml" in z.namelist():
+                root  = _etree.fromstring(z.read("word/comments.xml"))
+                all_c = root.findall(f".//{{{WNS}}}comment")
+                reply_ids = set()
+                if "word/commentsExtended.xml" in z.namelist():
+                    W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+                    er  = _etree.fromstring(z.read("word/commentsExtended.xml"))
+                    for ext in er.findall(f".//{{{W15}}}commentEx"):
+                        if ext.get(f"{{{W15}}}paraIdParent"):
+                            cid = ext.get(f"{{{W15}}}id", "")
+                            if cid: reply_ids.add(cid)
+                for c in all_c:
+                    cid    = c.get(f"{{{WNS}}}id", "")
+                    author = c.get(f"{{{WNS}}}author", "Editor")
+                    body   = " ".join(c.itertext()).strip()
+                    if body and cid not in reply_ids:
+                        comments.append({"author": author, "text": body})
+    except Exception:
+        pass
+    full = "\n".join(text)
+    return {"text": full, "headings": headings, "links": links, "comments": comments,
+            "word_count": len(full.split()), "error": ""}
+
+def extract_pdf(raw):
+    if not PDF_OK:
+        return {"text": "", "headings": [], "links": [], "comments": [], "word_count": 0, "error": "pdfplumber not installed"}
+    parts, links = [], []
+    with pdfplumber.open(BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t: parts.append(t)
+            for a in (page.annots or []):
+                u = a.get("uri")
+                if u: links.append(u)
+    full = "\n".join(parts)
+    return {"text": full, "headings": [], "links": links, "comments": [], "word_count": len(full.split()), "error": ""}
+
+def extract_txt(raw):
+    full = raw.decode("utf-8", errors="ignore")
+    return {"text": full, "headings": [], "links": re.findall(r'https?://\S+', full),
+            "comments": [], "word_count": len(full.split()), "error": ""}
+
+def parse_file(f):
+    raw  = f.getvalue(); name = f.name.lower()
+    if   name.endswith(".docx"): return extract_docx(raw)
+    elif name.endswith(".pdf"):  return extract_pdf(raw)
+    else:                        return extract_txt(raw)
+
+# ── Deterministic scoring (file mode) ─────────────────────────────────────
+def classify_comment(text):
+    low = text.lower()
+    for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's",
+               "the source","in the source","copied","from google","from maps","url goes","link goes",
+               "apartments","no apartments","mins away","minutes away","under construction","off-plan","data","fact"]:
+        if kw in low: return "Data accuracy", 1.2
+    for kw in ["missing","add","please add","include","mention","not mentioned","should mention",
+               "we need","please mention","go through","available","please write","notable projects",
+               "specific","more details","lacks","header","section"]:
+        if kw in low: return "Missing info", 1.2
+    return "Grammar / rephrasing", 0.8
+
+def apply_deductions(comments):
+    classified        = []
+    comment_deduction = 0.0
+    for c in comments:
+        ctype, pts = classify_comment(c["text"])
+        classified.append({"author": c["author"], "text": c["text"], "type": ctype, "deduction": pts})
+        comment_deduction += pts
+    final = max(0, round(100 - comment_deduction, 1))
+    return final, {
+        "base_score":        100,
+        "comment_count":     len(comments),
+        "comment_deduction": round(comment_deduction, 1),
+        "classified":        classified,
+        "final_score":       final,
+    }
+
+def get_recommendation(score):
+    return "approve" if score >= 80 else "reject" if score < 60 else "revise"
+
+def get_grade(score):
+    for t, label in GRADE_MAP:
+        if score >= t: return label
+    return GRADE_MAP[-1][1]
+
+def sidebar():
+    with st.sidebar:
+        st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
+        page = st.radio("Navigation",
+                        ["📝  New evaluation",
+                         "◫  Dashboard"],
+                        label_visibility="collapsed", key="sidebar_navigation")
+        st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
+        st.markdown("""
+| Rule | Pts |
+|---|---:|
+| Factual/source correction | −3 |
+| Wrong info removed | −2 |
+| Missing info added | −1.5 |
+| Structural rewrite | −1.2 |
+| Arabic/grammar fix | −0.6 |
+| Rephrase only | −0.3 |
+| Extra revision round | −0.7 |
+""")
+        st.markdown(
+            "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
+            "section[data-testid='stSidebar'] td,section[data-testid='stSidebar'] th{padding:7px 10px;border-bottom:1px solid #f0f0f0}"
+            "section[data-testid='stSidebar'] td:last-child{color:#ef4444;font-weight:700;text-align:right}"
+            "section[data-testid='stSidebar'] thead{display:none}</style>",
+            unsafe_allow_html=True)
+
+        if "Dashboard" in page: return "dashboard"
+        return "gdoc"
+
+# ── Submit page (file upload — existing) ──────────────────────────────────
+def page_submit():
+    inject_css()
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ File upload mode</div><h1>Submit Article</h1><p>Upload a .docx with editor comments for automated scoring.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+    service_email = get_service_account_email()
+    main_col, side_col = st.columns([3.1, 1.05], gap="large")
+
+    with main_col:
+        with st.container(border=True):
+            st.markdown('<div class="form-card-header"><div><div class="form-card-title">New submission</div><div class="form-card-sub">Fill in the details and upload the article file.</div></div><div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div></div>', unsafe_allow_html=True)
+            with st.form("qa_form"):
+                c1, c2 = st.columns(2)
+                writer      = c1.text_input("Writer name",        placeholder="e.g. Sarah Ahmed")
+                editor_name = c2.text_input("Subeditor / editor", placeholder="e.g. Mohamed Ali")
+                c3, c4 = st.columns(2)
+                title = c3.text_input("Article title", placeholder="e.g. Everything About Mortgages")
+                ctype = c4.selectbox("Content type", CONTENT_TYPES)
+                c5, _ = st.columns(2)
+                lang  = c5.selectbox("Language", LANGUAGES)
+                st.markdown('<span style="font-size:12px;font-weight:800;color:#374151;margin-right:8px">Platform</span>', unsafe_allow_html=True)
+                platform = st.radio("Platform", PLATFORMS, horizontal=True,
+                                    label_visibility="collapsed", key="platform_choice")
+                st.markdown('<div class="form-section-divider">
