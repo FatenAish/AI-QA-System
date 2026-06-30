@@ -1648,7 +1648,6 @@ def fetch_editor_handoff_revisions(drive_svc, creds, doc_id, writer_name, editor
 
     return writer_text, editor_text, writer_rev, editor_rev, "editor_session_writer_handoff_vs_editor_final"
 
-
 def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor_name, revisions):
     if not revisions or len(revisions) < 2:
         return None, None, None, None, "not_enough_revisions_for_fallback"
@@ -1658,16 +1657,13 @@ def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor
     final_matches = [i for i, r in enumerate(ordered) if _name_matches_revision_user(final_editor_name, r)]
     if final_matches:
         final_idx = final_matches[-1]
-        
-        # Find the closest preceding revision that was NOT made by the editor
-        base_idx = next((i for i in range(final_idx - 1, -1, -1) if i not in final_matches), -1)
-        
-        if base_idx >= 0:
+        if final_idx > 0:
+            base_idx = final_idx - 1
             base_rev = ordered[base_idx]
             final_rev = ordered[final_idx]
             base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
             final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
-            return base_text, final_text, base_rev, final_rev, "fallback_latest_editor_vs_previous_writer_revision"
+            return base_text, final_text, base_rev, final_rev, "fallback_latest_editor_vs_previous_revision"
 
     base_rev = ordered[-2]
     final_rev = ordered[-1]
@@ -2774,4 +2770,587 @@ def extract_pdf(raw):
 
 def extract_txt(raw):
     full = raw.decode("utf-8", errors="ignore")
-    return {"text": full, "headings": [], "links
+    return {"text": full, "headings": [], "links": re.findall(r'https?://\S+', full),
+            "comments": [], "word_count": len(full.split()), "error": ""}
+
+def parse_file(f):
+    raw  = f.getvalue(); name = f.name.lower()
+    if   name.endswith(".docx"): return extract_docx(raw)
+    elif name.endswith(".pdf"):  return extract_pdf(raw)
+    else:                        return extract_txt(raw)
+
+# ── Deterministic scoring (file mode) ─────────────────────────────────────
+def classify_comment(text):
+    low = text.lower()
+    for kw in ["wrong","incorrect","not correct","inaccurate","error","should be","it is","it's",
+               "the source","in the source","copied","from google","from maps","url goes","link goes",
+               "apartments","no apartments","mins away","minutes away","under construction","off-plan","data","fact"]:
+        if kw in low: return "Data accuracy", 1.2
+    for kw in ["missing","add","please add","include","mention","not mentioned","should mention",
+               "we need","please mention","go through","available","please write","notable projects",
+               "specific","more details","lacks","header","section"]:
+        if kw in low: return "Missing info", 1.2
+    return "Grammar / rephrasing", 0.8
+
+def apply_deductions(comments):
+    classified        = []
+    comment_deduction = 0.0
+    for c in comments:
+        ctype, pts = classify_comment(c["text"])
+        classified.append({"author": c["author"], "text": c["text"], "type": ctype, "deduction": pts})
+        comment_deduction += pts
+    final = max(0, round(100 - comment_deduction, 1))
+    return final, {
+        "base_score":        100,
+        "comment_count":     len(comments),
+        "comment_deduction": round(comment_deduction, 1),
+        "classified":        classified,
+        "final_score":       final,
+    }
+
+def get_recommendation(score):
+    return "approve" if score >= 80 else "reject" if score < 60 else "revise"
+
+def get_grade(score):
+    for t, label in GRADE_MAP:
+        if score >= t: return label
+    return GRADE_MAP[-1][1]
+
+def sidebar():
+    with st.sidebar:
+        st.markdown('<div class="sb-brand"><div class="sb-brand-icon">✦</div><div><div class="sb-brand-title">Content QA</div><div class="sb-brand-sub">Editorial review</div></div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-section">Navigation</div>', unsafe_allow_html=True)
+        page = st.radio("Navigation",
+                        ["📝  New evaluation",
+                         "◫  Dashboard"],
+                        label_visibility="collapsed", key="sidebar_navigation")
+        st.markdown('<div class="sb-section">Deduction rules</div>', unsafe_allow_html=True)
+        st.markdown("""
+| Rule | Pts |
+|---|---:|
+| Factual/source correction | −3 |
+| Wrong info removed | −2 |
+| Missing info added | −1.5 |
+| Structural rewrite | −1.2 |
+| Arabic/grammar fix | −0.6 |
+| Rephrase only | −0.3 |
+| Extra revision round | −0.7 |
+""")
+        st.markdown(
+            "<style>section[data-testid='stSidebar'] table{width:100%;font-size:12px;border-collapse:collapse}"
+            "section[data-testid='stSidebar'] td,section[data-testid='stSidebar'] th{padding:7px 10px;border-bottom:1px solid #f0f0f0}"
+            "section[data-testid='stSidebar'] td:last-child{color:#ef4444;font-weight:700;text-align:right}"
+            "section[data-testid='stSidebar'] thead{display:none}</style>",
+            unsafe_allow_html=True)
+
+        if "Dashboard" in page: return "dashboard"
+        return "gdoc"
+
+# ── Submit page (file upload — existing) ──────────────────────────────────
+
+# ── UI helpers ─────────────────────────────────────────────────────────────
+def _score_color(score):
+    try:
+        score = float(score or 0)
+    except Exception:
+        score = 0
+    if score >= 80:
+        return "#10b981"
+    if score >= 60:
+        return "#f59e0b"
+    return "#ef4444"
+
+
+def _dec_class(decision):
+    decision = str(decision or "").lower()
+    if decision == "approve":
+        return "dec-approve"
+    if decision == "revise":
+        return "dec-revise"
+    if decision == "reject":
+        return "dec-reject"
+    return "dec-pending"
+
+
+def _safe_display(value):
+    return html.escape(str(value or ""))
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value or 0))
+    except Exception:
+        return default
+
+
+def _filter_obvious_replies(comments):
+    clear_replies = {"done", "fixed", "noted", "ok", "okay", "sure", "thanks", "thank you", "updated"}
+    kept = []
+    for c in comments or []:
+        txt = _plain_comment_text(c.get("text", ""))
+        low = txt.strip().lower().rstrip(".,!")
+        if not txt or len(txt.strip()) <= 3:
+            continue
+        if low in clear_replies:
+            continue
+        if len(txt.strip()) < 15 and txt.strip().startswith("@"):
+            continue
+        kept.append({**c, "text": txt})
+    return kept
+
+
+def _make_submission_payload(
+    *,
+    mode,
+    writer,
+    editor_name,
+    title,
+    doc_url="",
+    file_name="",
+    ctype,
+    lang,
+    platform,
+    parsed,
+    comments,
+    classified,
+    diff_classified=None,
+    editor_rounds=0,
+    revision_total=0,
+    revision_events=None,
+    qa=None,
+    score_breakdown=None,
+):
+    diff_classified = diff_classified or []
+    revision_events = revision_events or []
+    if score_breakdown is None:
+        final_score, score_breakdown = apply_gdoc_deductions_full(classified, diff_classified, editor_rounds)
+    else:
+        final_score = score_breakdown.get("final_score", 100)
+
+    if qa is None:
+        qa = run_qa_feedback(
+            title,
+            parsed.get("text", ""),
+            writer,
+            ctype,
+            lang,
+            platform,
+            parsed.get("headings", []),
+            parsed.get("links", []),
+            comments,
+        )
+
+    return {
+        "mode": mode,
+        "writer": writer,
+        "editor_name": editor_name,
+        "title": title or parsed.get("title", "Untitled"),
+        "doc_url": doc_url,
+        "file_name": file_name,
+        "content_type": ctype,
+        "language": lang,
+        "platform": platform,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "word_count": parsed.get("word_count", len(str(parsed.get("text", "")).split())),
+        "headings": parsed.get("headings", []),
+        "links": parsed.get("links", []),
+        "comments": comments,
+        "classified": classified,
+        "diff_classified": diff_classified,
+        "revision_events": revision_events,
+        "editor_rounds": editor_rounds,
+        "revision_total": revision_total,
+        "qa": qa,
+        "qa_score": final_score,
+        "score_breakdown": score_breakdown,
+        "editor_decision": get_recommendation(final_score),
+        "editor_notes": "",
+    }
+
+
+def render_report(sub):
+    score = float(sub.get("qa_score", 0) or 0)
+    grade = get_grade(score)
+    rec = sub.get("editor_decision") or get_recommendation(score)
+    breakdown = sub.get("score_breakdown", {}) or {}
+    qa = sub.get("qa", {}) or {}
+    classified = sub.get("classified", []) or []
+    diff_classified = sub.get("diff_classified", []) or []
+
+    st.markdown(f"""
+<div class="score-hero">
+  <div><span class="score-num">{score:g}</span><span class="score-den">/100</span></div>
+  <div class="score-grade">{_safe_display(grade)}</div>
+  <div class="score-verdict">Recommendation: <strong>{_safe_display(str(rec).title())}</strong></div>
+</div>
+""", unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Comments", int(breakdown.get("comment_count", len(classified)) or 0))
+    c2.metric("Comment deduction", f"-{breakdown.get('comment_deduction', 0)}")
+    c3.metric("Silent edits", int(breakdown.get("diff_count", len(diff_classified)) or 0))
+    c4.metric("Revision rounds", int(breakdown.get("editor_rounds", sub.get("editor_rounds", 0)) or 0))
+
+    st.markdown("#### Overall feedback")
+    st.write(qa.get("overall_feedback", "No feedback generated."))
+
+    scores = qa.get("scores", {}) or {}
+    if scores:
+        st.markdown("#### Category feedback")
+        for cat, info in scores.items():
+            max_score = CAT_MAX.get(cat, 100)
+            score_value = info.get("score", max_score)
+            feedback = info.get("feedback", "")
+            st.markdown(f"**{cat}: {score_value}/{max_score}**")
+            if feedback:
+                st.caption(feedback)
+
+    strengths = qa.get("key_strengths", []) or []
+    improvements = qa.get("areas_for_improvement", []) or []
+    suggestions = qa.get("suggestions", []) or []
+    if strengths or improvements or suggestions:
+        cols = st.columns(3)
+        with cols[0]:
+            st.markdown("#### Strengths")
+            for item in strengths:
+                st.markdown(f"- {item}")
+        with cols[1]:
+            st.markdown("#### Improvements")
+            for item in improvements:
+                st.markdown(f"- {item}")
+        with cols[2]:
+            st.markdown("#### Suggestions")
+            for item in suggestions:
+                st.markdown(f"- {item}")
+
+    if classified:
+        st.markdown("#### Counted comments")
+        for idx, c in enumerate(classified, 1):
+            st.markdown(
+                f"""<div class="cmt-card" style="border-left-color:{c.get('tc', '#4f46e5')};background:{c.get('color', '#f8fafc')}">
+<strong>{idx}. {_safe_display(c.get('label', c.get('type', 'Comment')))}</strong>
+<span class="cat-ref">-{c.get('deduction', 0)}</span><br>
+<span class="cmt-author">{_safe_display(c.get('author', 'Editor'))}</span>: {_safe_display(c.get('text', ''))}
+</div>""",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown('<div class="no-cmt-notice">No counted editor comments.</div>', unsafe_allow_html=True)
+
+    if diff_classified:
+        st.markdown("#### Silent edits")
+        for idx, d in enumerate(diff_classified, 1):
+            st.markdown(
+                f"""<div class="cmt-card" style="border-left-color:{d.get('tc', '#4f46e5')};background:{d.get('color', '#f8fafc')}">
+<strong>{idx}. {_safe_display(d.get('label', d.get('type', 'Edit')))}</strong>
+<span class="cat-ref">-{d.get('deduction', 0)}</span><br>
+<strong>Before:</strong> {_safe_display(d.get('original', ''))}<br>
+<strong>After:</strong> {_safe_display(d.get('revised', ''))}
+</div>""",
+                unsafe_allow_html=True,
+            )
+
+
+def _append_submission(sub):
+    save_record(sub)
+    st.session_state.submissions = load_records()
+    st.session_state.latest_submission = sub
+
+
+def _process_file_upload(writer, editor_name, title, ctype, lang, platform, upload):
+    parsed = parse_file(upload)
+    if not parsed.get("text") or len(parsed.get("text", "")) < 30:
+        raise ValueError(f"Could not read text from file. {parsed.get('error', '')}")
+
+    comments = _filter_obvious_replies(parsed.get("comments", []))
+    parsed["comments"] = comments
+    classified = classify_comments_ai(comments, platform, lang) if comments else []
+    score, score_breakdown = apply_gdoc_deductions_full(classified, [], 0)
+    qa = run_qa_feedback(
+        title,
+        parsed.get("text", ""),
+        writer,
+        ctype,
+        lang,
+        platform,
+        parsed.get("headings", []),
+        parsed.get("links", []),
+        comments,
+    )
+    return _make_submission_payload(
+        mode="file",
+        writer=writer,
+        editor_name=editor_name,
+        title=title,
+        file_name=upload.name,
+        ctype=ctype,
+        lang=lang,
+        platform=platform,
+        parsed=parsed,
+        comments=comments,
+        classified=classified,
+        qa=qa,
+        score_breakdown=score_breakdown,
+    )
+
+
+def _process_google_doc(writer, editor_name, title, ctype, lang, platform, doc_url):
+    parsed, err = fetch_google_doc(doc_url)
+    if err:
+        raise ValueError(err)
+    if not parsed or not parsed.get("text") or len(parsed.get("text", "")) < 30:
+        raise ValueError("Could not extract text from the Google Doc.")
+
+    comments = _filter_obvious_replies(parsed.get("comments", []))
+    classified = classify_comments_ai(comments, platform, lang) if comments else []
+
+    editor_rounds, revision_total, revision_events = count_revision_rounds(parsed.get("revisions", []), editor_name)
+
+    diff_classified = []
+    try:
+        doc_id = extract_doc_id(doc_url)
+        current_text = parsed.get("text", "")
+        prev_text, prev_rev, current_rev = fetch_latest_editor_previous_revision(
+            parsed.get("drive_svc"),
+            parsed.get("svc_creds"),
+            doc_id,
+            editor_name,
+            parsed.get("revisions", []),
+            parsed.get("current_file_meta", {}),
+            current_text,
+        )
+        if prev_text:
+            changes = compute_diff(prev_text, current_text)
+            changes = _prepare_arabic_or_normal_changes(changes, lang)
+            diff_classified = classify_diff_changes(changes, platform, effective_diff_language(changes, lang))
+    except Exception:
+        diff_classified = []
+
+    score, score_breakdown = apply_gdoc_deductions_full(classified, diff_classified, editor_rounds)
+    qa = run_qa_feedback(
+        title or parsed.get("title", "Untitled"),
+        parsed.get("text", ""),
+        writer,
+        ctype,
+        lang,
+        platform,
+        parsed.get("headings", []),
+        parsed.get("links", []),
+        comments,
+    )
+
+    return _make_submission_payload(
+        mode="gdoc",
+        writer=writer,
+        editor_name=editor_name,
+        title=title or parsed.get("title", "Untitled"),
+        doc_url=clean_google_doc_url(doc_url),
+        ctype=ctype,
+        lang=lang,
+        platform=platform,
+        parsed=parsed,
+        comments=comments,
+        classified=classified,
+        diff_classified=diff_classified,
+        editor_rounds=editor_rounds,
+        revision_total=revision_total,
+        revision_events=revision_events,
+        qa=qa,
+        score_breakdown=score_breakdown,
+    )
+
+
+# ── Submit pages ───────────────────────────────────────────────────────────
+def page_submit():
+    """Legacy file-upload submit page kept so old navigation does not break."""
+    inject_css()
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ File upload mode</div><h1>Submit Article</h1><p>Upload a .docx, .pdf or .txt file for automated scoring.</p></div><div class="qa-hero-icon">☑</div></div>', unsafe_allow_html=True)
+
+    with st.container(border=True):
+        st.markdown('<div class="form-card-header"><div><div class="form-card-title">New submission</div><div class="form-card-sub">Fill in the details and upload the article file.</div></div><div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div></div>', unsafe_allow_html=True)
+        with st.form("qa_form_file"):
+            c1, c2 = st.columns(2)
+            writer = c1.text_input("Writer name", placeholder="e.g. Sarah Ahmed")
+            editor_name = c2.text_input("Subeditor / editor", placeholder="e.g. Mohamed Ali")
+            c3, c4 = st.columns(2)
+            title = c3.text_input("Article title", placeholder="e.g. Everything About Mortgages")
+            ctype = c4.selectbox("Content type", CONTENT_TYPES)
+            c5, c6 = st.columns(2)
+            lang = c5.selectbox("Language", LANGUAGES)
+            platform = c6.radio("Platform", PLATFORMS, horizontal=True, key="platform_choice_file")
+            st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
+            upload = st.file_uploader("Upload article file", type=["docx", "pdf", "txt"], help=".docx is recommended for extracting editor comments.")
+            go = st.form_submit_button("Run full evaluation", use_container_width=True, type="primary")
+
+    if not go:
+        st.info("Upload a file to start the QA evaluation.")
+        return
+    if not writer or not title or not upload:
+        st.error("Please fill in writer name, article title and upload a file.")
+        return
+
+    with st.spinner("Running QA evaluation..."):
+        try:
+            sub = _process_file_upload(writer, editor_name, title, ctype, lang, platform, upload)
+        except Exception as e:
+            st.error(str(e))
+            return
+    _append_submission(sub)
+    st.success("Evaluation saved.")
+    render_report(sub)
+
+
+def page_gdoc_submit():
+    inject_css()
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Google Doc mode</div><h1>Content QA System</h1><p>Review Google Docs or uploaded files, score editor comments, and save results to the dashboard.</p></div><div class="qa-hero-icon">Q</div></div>', unsafe_allow_html=True)
+
+    mode_tab, file_tab = st.tabs(["Google Doc", "File upload"])
+
+    with mode_tab:
+        main_col, side_col = st.columns([3.1, 1.05], gap="large")
+        with main_col:
+            with st.container(border=True):
+                st.markdown('<div class="form-card-header"><div><div class="form-card-title">New Google Doc evaluation</div><div class="form-card-sub">Paste the doc link and fill in the review details.</div></div><div class="ready-badge"><span class="ready-dot"></span> Ready to submit</div></div>', unsafe_allow_html=True)
+                with st.form("qa_form_gdoc"):
+                    c1, c2 = st.columns(2)
+                    writer = c1.text_input("Writer name", placeholder="e.g. Sarah Ahmed", key="gdoc_writer")
+                    editor_name = c2.text_input("Subeditor / editor", placeholder="e.g. Mohamed Ali", key="gdoc_editor")
+                    c3, c4 = st.columns(2)
+                    title = c3.text_input("Article title", placeholder="Leave empty to use Google Doc title", key="gdoc_title")
+                    ctype = c4.selectbox("Content type", CONTENT_TYPES, key="gdoc_ctype")
+                    c5, c6 = st.columns(2)
+                    lang = c5.selectbox("Language", LANGUAGES, key="gdoc_lang")
+                    platform = c6.radio("Platform", PLATFORMS, horizontal=True, key="platform_choice_gdoc")
+                    st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=True)
+                    doc_url = st.text_input("Google Doc URL", placeholder="https://docs.google.com/document/d/...", key="gdoc_url")
+                    go = st.form_submit_button("Run full evaluation", use_container_width=True, type="primary")
+
+        with side_col:
+            st.markdown(f"""<div class="side-card">
+  <div class="side-card-title">Before submitting</div>
+  <div class="tip-box"><div class="tip-title">Google Doc access</div>Share the document with:<br><strong>{_safe_display(get_service_account_email())}</strong><br><br>Editor access is recommended for revision export.</div>
+</div>""", unsafe_allow_html=True)
+
+        if go:
+            if not writer or not doc_url:
+                st.error("Please fill in writer name and Google Doc URL.")
+            else:
+                with st.spinner("Fetching and evaluating Google Doc..."):
+                    try:
+                        sub = _process_google_doc(writer, editor_name, title, ctype, lang, platform, doc_url)
+                    except Exception as e:
+                        st.error(str(e))
+                    else:
+                        _append_submission(sub)
+                        st.success("Evaluation saved.")
+                        render_report(sub)
+
+    with file_tab:
+        page_submit()
+
+
+def page_dashboard():
+    inject_css()
+    records = load_records()
+    st.session_state.submissions = records
+    st.markdown('<div class="qa-hero"><div><div class="qa-hero-badge">✦ Dashboard</div><h1>QA Dashboard</h1><p>Track saved evaluations, scores, writers, platforms and editorial decisions.</p></div><div class="qa-hero-icon">◫</div></div>', unsafe_allow_html=True)
+
+    if not records:
+        st.info("No saved evaluations yet.")
+        if not is_shared_dashboard_connected():
+            st.warning(shared_dashboard_help_text())
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    total = len(records)
+    avg_score = sum(float(r.get("qa_score", 0) or 0) for r in records) / max(total, 1)
+    approved = sum(1 for r in records if (r.get("editor_decision") or get_recommendation(r.get("qa_score", 0))) == "approve")
+    revise = sum(1 for r in records if (r.get("editor_decision") or get_recommendation(r.get("qa_score", 0))) == "revise")
+    c1.metric("Total", total)
+    c2.metric("Average score", f"{avg_score:.1f}")
+    c3.metric("Approved", approved)
+    c4.metric("Needs revision", revise)
+
+    with st.expander("Filters", expanded=True):
+        fc1, fc2, fc3 = st.columns(3)
+        writers = sorted({r.get("writer", "") for r in records if r.get("writer")})
+        platforms = sorted({r.get("platform", "") for r in records if r.get("platform")})
+        decisions = ["approve", "revise", "reject", "pending"]
+        writer_filter = fc1.selectbox("Writer", ["All"] + writers)
+        platform_filter = fc2.selectbox("Platform", ["All"] + platforms)
+        decision_filter = fc3.selectbox("Decision", ["All"] + decisions)
+
+    filtered = []
+    for r in records:
+        dec = r.get("editor_decision") or get_recommendation(r.get("qa_score", 0))
+        if writer_filter != "All" and r.get("writer") != writer_filter:
+            continue
+        if platform_filter != "All" and r.get("platform") != platform_filter:
+            continue
+        if decision_filter != "All" and dec != decision_filter:
+            continue
+        filtered.append(r)
+
+    for idx, sub in enumerate(reversed(filtered)):
+        sub = dict(sub)
+        sub["_render_uid"] = f"dash_{idx}"
+        score = float(sub.get("qa_score", 0) or 0)
+        dec = sub.get("editor_decision") or get_recommendation(score)
+        grade_short = get_grade(score).split(" — ")[-1]
+        plat_cls = "bay" if sub.get("platform") == "Bayut" else "dub"
+        lang_cls = "eng" if sub.get("language") == "English" else "ara"
+        mode = sub.get("mode", "file")
+        mode_chip = '<span class="meta-chip gdoc">Google Doc</span>' if mode == "gdoc" else '<span class="meta-chip">File</span>'
+        editor_chip = f'<span class="meta-chip">Editor: {_safe_display(sub.get("editor_name", "—"))}</span>' if sub.get("editor_name") else ""
+        breakdown = sub.get("score_breakdown", {}) or {}
+        parts = []
+        if breakdown.get("comment_count"):
+            parts.append(f"{breakdown.get('comment_count')} comments (-{breakdown.get('comment_deduction', 0)})")
+        if breakdown.get("diff_count"):
+            parts.append(f"{breakdown.get('diff_count')} edits (-{breakdown.get('diff_deduction', 0)})")
+        if breakdown.get("rounds_penalty"):
+            parts.append(f"revision rounds (-{breakdown.get('rounds_penalty', 0)})")
+        score_brief = " · ".join(parts) if parts else "No deductions"
+
+        st.markdown(f"""
+<div class="article-card">
+  <div class="article-card-left">
+    <div class="article-card-title">{_safe_display(sub.get('title', 'Untitled'))}</div>
+    <div class="article-card-meta">
+      <span class="meta-chip">Writer: {_safe_display(sub.get('writer', '—'))}</span>
+      {editor_chip}
+      {mode_chip}
+      <span class="meta-chip {plat_cls}">{_safe_display(sub.get('platform', ''))}</span>
+      <span class="meta-chip {lang_cls}">{_safe_display(sub.get('language', ''))}</span>
+      <span class="meta-chip">{_safe_display(sub.get('content_type', ''))}</span>
+      <span class="meta-chip">{_safe_int(sub.get('word_count')):,} words</span>
+      <span class="meta-chip">{_safe_display(sub.get('date', ''))}</span>
+    </div>
+    <div class="article-card-summary"><strong style="color:#374151">{_safe_display(score_brief)}</strong></div>
+  </div>
+  <div class="article-card-right">
+    <div>
+      <div class="score-ring" style="--rc:{_score_color(score)};--rv:{int(score)}%">{int(score)}</div>
+      <div class="score-ring-lbl">{_safe_display(grade_short)}</div>
+    </div>
+    <span class="dec-badge {_dec_class(dec)}">{_safe_display(str(dec).title())}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        with st.expander(f"View full report — {sub.get('writer', '—')} · {sub.get('date', '')}"):
+            render_report(sub)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+def main():
+    if "submissions" not in st.session_state:
+        st.session_state.submissions = load_records()
+    page = sidebar()
+    if page == "dashboard":
+        page_dashboard()
+    else:
+        page_gdoc_submit()
+
+
+if __name__ == "__main__":
+    main()
