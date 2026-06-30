@@ -1668,7 +1668,7 @@ def fetch_latest_editor_previous_revision(drive_svc, creds, doc_id, final_editor
     base_rev = ordered[-2]
     final_rev = ordered[-1]
     base_text = export_revision_text(drive_svc, creds, doc_id, base_rev["id"])
-    final_text = export_revision_text(drive_svc, doc_id, final_rev["id"])
+    final_text = export_revision_text(drive_svc, creds, doc_id, final_rev["id"])
     if base_text and final_text and normalize_for_compare(base_text) != normalize_for_compare(final_text):
         return base_text, final_text, base_rev, final_rev, "fallback_latest_vs_previous_revision"
 
@@ -2868,4 +2868,4 @@ def page_submit():
                 st.markdown('<span style="font-size:12px;font-weight:800;color:#374151;margin-right:8px">Platform</span>', unsafe_allow_html=True)
                 platform = st.radio("Platform", PLATFORMS, horizontal=True,
                                     label_visibility="collapsed", key="platform_choice")
-                st.markdown('<div class="form-section-divider">
+                st.markdown('<div class="form-section-divider"></div>', unsafe_allow_html=
